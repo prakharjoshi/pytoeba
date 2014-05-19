@@ -1,0 +1,1 @@
+-e git+https://github.com/loolmeh/xapian-haystack@49cc61c86fd8f5ffccf0b756d3eca6196eba05e9#egg=xapian_haystack-remove-opinionated-stemming
