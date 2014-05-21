@@ -6,6 +6,7 @@ so be extra careful with the ORM.
 from django.db import models
 from django.contrib.auth.models import User
 from .choices import LANGS, LOG_ACTIONS
+from .utils import get_audio_path
 
 
 class Sentence(models.Model):
@@ -193,3 +194,24 @@ class SentenceTag(models.Model):
 
     def __unicode__(self):
         return '<%s> %s' % (self.localized_tag.text, self.sentence.text)
+
+
+class Audio(models.Model):
+    """
+    Stores a reference to the audio file on disk. Uses the sentence id
+    to name them on upload. Respects your MEDIA_ROOT settings. One
+    sentence can have multiple audio files by multiple users. It also
+    can store some metadata like bitrate and accent in the future
+    These can be automatically extracted from the file metadata on upload
+    and from the user's profile info.
+    """
+    hash_id = models.CharField(
+        db_index=True, max_length=40, blank=False, null=False, unique=True
+        )
+    sentence = models.ForeignKey(Sentence)
+    audio_file = models.FileField(upload_to=get_audio_path, null=False, blank=False)
+    added_by = models.ForeignKey(User, editable=False)
+    added_on = models.DateTimeField(auto_now_add=True, editable=False)
+
+    def __unicode__(self):
+        return '[%s] %s' % (self.audio_file, self.sentence)
