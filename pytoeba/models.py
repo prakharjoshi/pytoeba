@@ -117,3 +117,27 @@ class Log(models.Model):
         return '%s on %s by %s change: %s' % (
             self.type, self.sentence, self.done_by, self.change_set
             )
+
+
+class Correction(models.Model):
+    """
+    This holds a proposed correction to some sentence. It can be applied by the
+    owner or rejected. Not rejecting it will force the correction at some point
+    It can also be forced for whatever reason by moderators. Users adding it
+    can also annotate it with a reason. It's designed so that a user can add
+    multiple possible corrections to a single sentence all of which can be
+    modified by either the owner or the original submitter before acception.
+    As usual operations are abstracted on the manager and should go through it.
+    """
+    hash_id = models.CharField(
+        db_index=True, max_length=40, blank=False, null=False, unique=True
+        )
+    sentence = models.ForeignKey(Sentence)
+    text = models.CharField(max_length=500, blank=False, null=False)
+    added_by = models.ForeignKey(User, editable=False)
+    added_on = models.DateTimeField(auto_now_add=True, editable=False)
+    modified_on = models.DateTimeField(auto_now=True, editable=False)
+    reason = models.CharField(max_length=200, blank=True)
+
+    def __unicode__(self):
+        return '%s => %s' % (self.sentence.text, self.text)
