@@ -141,3 +141,55 @@ class Correction(models.Model):
 
     def __unicode__(self):
         return '%s => %s' % (self.sentence.text, self.text)
+
+
+class Tag(models.Model):
+    """
+    This is probably a pretty desperate attempt at trying not to replicate
+    the sentences table and api. This table anchors all tags that are directly
+    related, allowing for localizations to be accessed from a common point.
+    This design allows for fast access and normalization but quickly
+    complicates things when users don't realize that a tag could've been
+    translated and not added. Merging the two nodes would require handling
+    a number of edge cases. All involving remapping the tag links from one
+    node to another and removing one of them.
+    """
+    hash_id = models.CharField(
+        db_index=True, max_length=40, blank=False, null=False, unique=True
+        )
+    added_by = models.ForeignKey(User, editable=False)
+    added_on = models.DateTimeField(auto_now_add=True, editable=False)
+
+    def __unicode__(self):
+        return 'Tag ' + self.id
+
+
+class LocalizedTag(models.Model):
+    """
+    Holds info about a tag localized in multiple languages and translated by
+    being anchored to the same Tag instance (think same node in a tree).
+    """
+    tag = models.ForeignKey(Tag)
+    text = models.CharField(max_length=100, blank=False, null=False)
+    lang = models.CharField(
+        max_length=4, choices=LANGS, blank=False, null=False
+        )
+
+    def __unicode__(self):
+        return '%s - %s - %s' % (self.tag, self.lang, self.text)
+
+
+class SentenceTag(models.Model):
+    """
+    Stores an entry every time a tag is associated with a sentence.
+    """
+    sentence = models.ForeignKey(Sentence)
+    # for faster access to localizations
+    tag = models.ForeignKey(Tag)
+    # just to be sure which exact tag in which language got added
+    localized_tag = models.ForeignKey(LocalizedTag)
+    added_by = models.ForeignKey(User, editable=False)
+    added_on = models.DateTimeField(auto_now_add=True, editable=False)
+
+    def __unicode__(self):
+        return '<%s> %s' % (self.localized_tag.text, self.sentence.text)
