@@ -5,7 +5,10 @@ so be extra careful with the ORM.
 
 from django.db import models
 from django.conf import settings
-from .choices import LANGS, LOG_ACTIONS
+from django.contrib.auth.models import AbstractUser
+from .choices import (
+    LANGS, LOG_ACTIONS, PRIVACY, COUNTRIES, USER_STATUS, MARKUPS
+    )
 from .utils import get_audio_path
 
 User = settings.AUTH_USER_MODEL
@@ -278,3 +281,39 @@ class Audio(models.Model):
 
     def __unicode__(self):
         return '[%s] %s' % (self.audio_file, self.sentence)
+
+
+class PytoebaUser(AbstractUser):
+    """
+    Centralizes all info relating to users and their profile
+    info. Inherits from the auth model's AbstractUser class
+    and therefore behaves the way django's User model would
+    and is fully compatible with django.contrib.auth system.
+    """
+    email_unconfirmed = models.EmailField(blank=True, default='test@test.com')
+    email_confirmation_key = models.CharField(max_length=40, blank=True)
+    email_confirmation_key_created_on = models.DateTimeField(
+        blank=True, null=True
+        )
+    privacy = models.CharField(
+        max_length=1, choices=PRIVACY, default='o', blank=False,
+        null=False
+        )
+    country = models.CharField(
+        max_length=2, choices=COUNTRIES, blank=True, null=True
+        )
+    birthday = models.DateTimeField(blank=True, null=True)
+    # This is strictly for filtering, permissions are handled
+    # exclusively through links to django.contrib.auth.Group
+    status = models.CharField(
+        db_index=True, max_length=1, choices=USER_STATUS, default='u',
+        editable=False, null=False
+        )
+    with_status_vote_count = models.IntegerField(default=0)
+    against_status_vote_count = models.IntegerField(default=0)
+    about_text = models.TextField()
+    about_markup = models.CharField(max_length=2, choices=MARKUPS, default='')
+    about_html = models.TextField()
+
+    def __unicode__(self):
+        return self.username
