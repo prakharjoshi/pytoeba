@@ -139,3 +139,31 @@ LANGS = (
     ("xho", "Xhosa"),
     ("yid", "Yiddish"),
 )
+
+# use Log.get_type_display() to get the readable part
+# for display in templates
+LOG_ACTIONS = (
+    ('sad', 'Sentence added'),
+    ('sed', 'Sentence edited'),
+    ('srd', 'Sentence removed'),
+    ('sld', 'Sentence locked'),
+    ('sul', 'Sentence unlocked'),
+    ('soa', 'Sentence adopted'),
+    ('sor', 'Sentence released'),
+    ('slc', 'Sentence language changed'),
+    ('lad', 'Link added'),
+    ('lrd', 'Link removed'),
+    ('cma', 'Comment added'),
+    ('cme', 'Comment edited'),
+    ('cmr', 'Comment removed'),
+    ('tad', 'Tag added'),
+    ('trd', 'Tag removed'),
+    ('usd', 'User subscribed'),
+    ('uud', 'User unsubscribed'),
+    ('cad', 'Correction added'),
+    ('ced', 'Correction edited'),
+    ('crd', 'Correction removed'),
+    ('crj', 'Correction rejected'),
+    ('cac', 'Correction accepted'),
+    ('cfd', 'Correction forced'),
+)

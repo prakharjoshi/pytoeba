@@ -5,6 +5,7 @@ so be extra careful with the ORM.
 
 from django.db import models
 from django.conf import settings
+from .choices import LANGS, LOG_ACTIONS
 
 User = settings.AUTH_USER_MODEL
 
@@ -95,4 +96,62 @@ class Link(models.Model):
     def __unicode__(self):
         return '[%s] -(%s)-> [%s]' % (
             self.side1.text, self.level, self.side2.text
+            )
+
+
+class Log(models.Model):
+    """
+    This model links a sentence to some kind of operation, as defined
+    in the LOG_ACTIONS tuple in pytoeba.choices. The logs attatched to
+    each sentence is automatically generated from information stored
+    here based on the LOG_MESSAGES dictionary. Extending the actions
+    should be as simple as extending the LANGS tuple, add a new entry
+    and restart the server.
+    """
+    sentence = models.ForeignKey(Sentence)
+    type = models.CharField(
+        db_index=True, max_length=3, editable=False, blank=False, null=False,
+        choices=LOG_ACTIONS
+        )
+    done_by = models.ForeignKey(
+        User, editable=False, related_name='log_doneby_set'
+        )
+    done_on = models.DateTimeField(auto_now_add=True, editable=False)
+    # This is intended to be a free field for versioning
+    # It's purely textual and should contain only one piece
+    # of relevant information. For sentence/comment/corrections-
+    # related changes, the text is stored. Reference to the
+    # exact sentence/comment/correction edited is stored as
+    # a hash_id in the source_hash_id field. For tags the tag name
+    # is stored. For links, nothing is stored in change_set
+    # and the hash_id of the target sentence is stored in hash_id.
+    # The level that is logged is always /only/ the direct link.
+    # Otherwise for operations with no versioning required like
+    # sentence adoption this field defaults to NULL.
+    change_set = models.CharField(max_length=500, null=True, default=None)
+    # there should probably be a source_id here too that points to sentence_id
+    # but making this work in django requires some ugly hack, so
+    # settling for an ugly property i guess for now, no queryset support
+    target_id = models.IntegerField(db_index=True, blank=True, null=True)
+    source_hash_id = models.CharField(
+        db_index=True, max_length=32, editable=False, blank=True, null=True,
+        )
+    target_hash_id = models.CharField(
+        db_index=True, max_length=32, editable=False, blank=True, null=True,
+        )
+    source_lang = models.CharField(
+        db_index=True, max_length=4, blank=True, null=True, choices=LANGS
+        )
+    target_lang = models.CharField(
+        db_index=True, max_length=4, blank=True, null=True, choices=LANGS
+        )
+
+    class Meta:
+        index_together = [
+            ['source_lang', 'target_lang'],
+        ]
+
+    def __unicode__(self):
+        return '%s on %s by %s change: %s' % (
+            self.type, self.sentence, self.done_by, self.change_set
             )
