@@ -183,3 +183,76 @@ class Correction(models.Model):
 
     def __unicode__(self):
         return '%s => %s' % (self.sentence.text, self.text)
+
+
+class Tag(models.Model):
+    """
+    This is probably a pretty desperate attempt at trying not to replicate
+    the sentences table and api. This table anchors all tags that are directly
+    related, allowing for localizations to be accessed from a common point.
+    This design allows for fast access and normalization but quickly
+    complicates things when users don't realize that a tag could've been
+    translated and not added. Merging the two nodes would require handling
+    a number of edge cases. All involving remapping the tag links from one
+    node to another and removing one of them.
+    """
+    hash_id = models.CharField(
+        db_index=True, max_length=32, blank=False, null=False, unique=True
+        )
+    added_by = models.ForeignKey(User, editable=False)
+    added_on = models.DateTimeField(
+        db_index=True, auto_now_add=True, editable=False
+        )
+
+    def __unicode__(self):
+        return 'Tag ' + str(self.id)
+
+
+class LocalizedTag(models.Model):
+    """
+    Holds info about a tag localized in multiple languages and translated by
+    being anchored to the same Tag instance (think same node in a tree).
+    """
+    tag = models.ForeignKey(Tag)
+    text = models.CharField(
+        max_length=100, blank=False, null=False, db_index=True
+        )
+    lang = models.CharField(
+        max_length=4, choices=LANGS, blank=False, null=False
+        )
+
+    class Meta:
+        index_together = [
+            ['tag', 'lang'],
+        ]
+        # this enforces one localization per tag on the db level, uses the
+        # above index.
+        unique_together = (
+            ('tag', 'lang'),
+        )
+
+    def __unicode__(self):
+        return '%s - %s - %s' % (self.tag, self.lang, self.text)
+
+
+class SentenceTag(models.Model):
+    """
+    Stores an entry every time a tag is associated with a sentence.
+    """
+    sentence = models.ForeignKey(Sentence)
+    tag = models.ForeignKey(Tag)
+    added_by = models.ForeignKey(User, editable=False)
+    added_on = models.DateTimeField(auto_now_add=True, editable=False)
+
+    class Meta:
+        index_together = [
+            ['sentence', 'tag'],
+        ]
+        # this enforces one unique tag per sentence on the db level, uses the
+        # above index.
+        unique_together = (
+            ('sentence', 'tag'),
+        )
+
+    def __unicode__(self):
+        return '<%s> %s' % (self.tag, self.sentence.text)
