@@ -34,3 +34,23 @@ python manage.py migrate --fake
 python manage.py runserver
 
 It should be accessible now on 127.0.0.1:8000
+
+Tests and coverage
+-------
+
+To run the test suite:
+
+py.test
+
+To see coverage report:
+
+coverage run --source pytoeba -m py.test
+coverage report
+
+To generate an html report:
+
+coverage run --source pytoeba -m py.test
+coverage html
+
+Then check htmlcov/index.html in your browser for a line by line
+coverage report per module
