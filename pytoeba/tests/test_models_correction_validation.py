@@ -1,28 +1,14 @@
-from pytoeba.models import Correction, Sentence
+from pytoeba.models import Correction
 from pytest import raises
 from django.db import IntegrityError
-from django.core.exceptions import ValidationError
-from django.contrib.auth.models import User
-from pytoeba.test_helpers import db_validate_blank, db_validate_null, db_validate_max_length
+from pytoeba.tests.test_helpers import (
+    db_validate_blank, db_validate_null, db_validate_max_length
+    )
 import pytest
 
 
-@pytest.fixture
-def corr(db):
-    testuser = User(username='user', password='pass')
-    testuser.save()
-    s1 = Sentence(
-        hash_id='hash', lang='eng', text='test', sim_hash=123,
-        added_by=testuser, length=1
-    )
-    s1.save()
-    corr = Correction(
-        hash_id='hash2', sentence=s1, text='test2', added_by=testuser
-        )
-    return corr
-
-
 @pytest.mark.django_db
+@pytest.mark.usefixture('corr')
 class TestCorrectionValidation():
 
     def test_default(db):

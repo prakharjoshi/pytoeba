@@ -2,26 +2,14 @@ from pytoeba.models import Sentence
 from pytest import raises
 from django.db import IntegrityError
 from django.core.exceptions import ValidationError
-from django.contrib.auth.models import User
-from pytoeba.test_helpers import (
+from pytoeba.tests.test_helpers import (
     db_validate_blank, db_validate_null, db_validate_max_length
     )
 import pytest
 
 
-@pytest.fixture
-def sent(db):
-    testuser = User(username='user', password='pass')
-    testuser.save()
-    sent = Sentence(
-        hash_id='hash', lang='eng', text='test', sim_hash=123,
-        added_by=testuser, length=1
-        )
-    return sent
-
-
 @pytest.mark.django_db
-@pytest.mark.usefixtures('sent')
+@pytest.mark.usefixture('sent')
 class TestSentenceValidation():
 
     def test_default(db):

@@ -1,25 +1,11 @@
-from pytoeba.models import Log, Sentence
+from pytoeba.models import Log
 from pytest import raises
 from django.db import IntegrityError
 from django.core.exceptions import ValidationError
-from django.contrib.auth.models import User
-from pytoeba.test_helpers import (
+from pytoeba.tests.test_helpers import (
     db_validate_blank, db_validate_null, db_validate_max_length
     )
 import pytest
-
-
-@pytest.fixture
-def log(db):
-    testuser = User(username='user', password='pass')
-    testuser.save()
-    s1 = Sentence(
-    hash_id='hash', lang='eng', text='test', sim_hash=123,
-    added_by=testuser, length=1
-    )
-    s1.save()
-    log = Log(sentence=s1, type='cad', done_by=testuser)
-    return log
 
 
 @pytest.mark.django_db
@@ -35,8 +21,10 @@ class TestLogValidation():
         log.save()
         assert len(Log.objects.all()) == 1
         assert log.sentence.text == 'test'
+        assert log.type == 'cad'
         assert log.done_by.username == 'user'
         assert log.change_set == None
+        assert log.target_id == 'hash'
         assert log.done_on
 
     def test_sentence_validation(db, log):

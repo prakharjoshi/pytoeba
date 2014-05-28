@@ -2,27 +2,14 @@ from pytoeba.models import Tag, LocalizedTag, SentenceTag, Sentence
 from pytest import raises
 from django.db import IntegrityError
 from django.core.exceptions import ValidationError
-from django.contrib.auth.models import User
-from pytoeba.test_helpers import (
+from pytoeba.tests.test_helpers import (
     db_validate_blank, db_validate_null, db_validate_max_length
     )
 import pytest
 
 
-@pytest.fixture
-def tag(db):
-    testuser = User(username='user', password='pass')
-    testuser.save()
-    s1 = Sentence(
-        hash_id='hash', lang='eng', text='test', sim_hash=123,
-        added_by=testuser, length=1
-        )
-    s1.save()
-    tag = Tag(hash_id='hash2', added_by=testuser)
-    return tag
-
-
 @pytest.mark.django_db
+@pytest.mark.usefixture('tag')
 class TestTagValidation():
 
     def test_default(db):
@@ -48,22 +35,8 @@ class TestTagValidation():
             tag.added_by = None
 
 
-@pytest.fixture
-def loctag(db):
-    testuser = User(username='user', password='pass')
-    testuser.save()
-    s1 = Sentence(
-        hash_id='hash', lang='eng', text='test', sim_hash=123,
-        added_by=testuser, length=1
-    )
-    s1.save()
-    tag = Tag(hash_id='hash2', added_by=testuser)
-    tag.save()
-    loctag = LocalizedTag(tag=tag, text='test2', lang='eng')
-    return loctag
-
-
 @pytest.mark.django_db
+@pytest.mark.usefixture('loctag')
 class TestLocalizedTagValidation():
 
     def test_default(db):
@@ -96,26 +69,8 @@ class TestLocalizedTagValidation():
         db_validate_null(loctag, 'lang')
 
 
-@pytest.fixture
-def sentag(db):
-    testuser = User(username='user', password='pass')
-    testuser.save()
-    s1 = Sentence(
-        hash_id='hash', lang='eng', text='test', sim_hash=123,
-        added_by=testuser, length=1
-    )
-    s1.save()
-    tag = Tag(hash_id='hash2', added_by=testuser)
-    tag.save()
-    loctag = LocalizedTag(tag=tag, text='test2', lang='eng')
-    loctag.save()
-    sentag = SentenceTag(
-        sentence=s1, localized_tag=loctag, tag=tag, added_by=testuser
-        )
-    return sentag
-
-
 @pytest.mark.django_db
+@pytest.mark.usefixture('sentag')
 class TestSentenceTagValidation():
 
     def test_default(db):

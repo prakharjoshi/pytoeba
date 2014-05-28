@@ -1,9 +1,7 @@
-from pytoeba.models import Audio, Sentence
+from pytoeba.models import Audio
 from pytest import raises
 from django.db import IntegrityError
-from django.core.exceptions import ValidationError
-from django.contrib.auth.models import User
-from pytoeba.test_helpers import (
+from pytoeba.tests.test_helpers import (
     db_validate_blank, db_validate_null, db_validate_max_length
     )
 from django.conf import settings
@@ -12,38 +10,8 @@ import pytest
 import os
 
 
-@pytest.fixture
-def audio(db, request):
-    testuser = User(username='user', password='pass')
-    testuser.save()
-    s1 = Sentence(
-        hash_id='hash', lang='eng', text='test', sim_hash=123,
-        added_by=testuser, length=1
-    )
-    s1.save()
-    path = os.path.join(settings.MEDIA_ROOT, s1.hash_id + '-' + 'hash2')
-    ft = open(path, 'w+')
-    f = File(ft)
-    audio = Audio(hash_id='hash2', sentence=s1, audio_file=f, added_by=testuser)
-
-    def fin():
-        ft.close()
-        os.remove(path)
-        try:
-            os.remove(
-                os.path.join(
-                    settings.MEDIA_ROOT,
-                    'hash' + '-' + 'hash2' + '.mp3'
-                    )
-                )
-        except OSError:
-            pass
-    request.addfinalizer(fin)
-
-    return audio
-
-
 @pytest.mark.django_db
+@pytest.mark.usefixture('audio')
 class TestAudioValidation():
 
     def test_default(db):

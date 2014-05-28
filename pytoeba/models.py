@@ -162,7 +162,7 @@ class Tag(models.Model):
     added_on = models.DateTimeField(auto_now_add=True, editable=False)
 
     def __unicode__(self):
-        return 'Tag ' + self.id
+        return 'Tag ' + str(self.id)
 
 
 class LocalizedTag(models.Model):
