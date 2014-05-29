@@ -6,3 +6,4 @@ py==1.4.20
 pytest==2.5.2
 pytest-django==2.6.2
 coverage==3.7.1
+simhash==1.4.0

@@ -22,3 +22,8 @@ def db_validate_null(instance, field, default=False):
 def db_validate_max_length(instance, field, length):
     setattr(instance, field, '1' * (length + 1))
     assert raises(ValidationError, instance.full_clean)
+
+
+def template_used(response, template_name):
+    template_names = [t.name for t in response.templates]
+    return template_name in template_names

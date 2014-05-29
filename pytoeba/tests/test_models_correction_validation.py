@@ -1,6 +1,7 @@
 from pytoeba.models import Correction
 from pytest import raises
 from django.db import IntegrityError
+from django.core.exceptions import ObjectDoesNotExist
 from pytoeba.tests.test_helpers import (
     db_validate_blank, db_validate_null, db_validate_max_length
     )
@@ -14,12 +15,13 @@ class TestCorrectionValidation():
     def test_default(db):
         assert len(Correction.objects.all()) == 0
         corr = Correction()
-        assert raises(IntegrityError, corr.save)
+        assert raises(ObjectDoesNotExist, corr.save)
 
     def test_minimum_defaults(db, corr):
         corr.save()
         assert len(Correction.objects.all()) == 1
-        assert corr.hash_id == 'hash2'
+        assert corr.hash_id
+        assert isinstance(corr.hash_id, str)
         assert corr.sentence.text == 'test'
         assert corr.text == 'test2'
         assert corr.added_by.username == 'user'
@@ -30,6 +32,7 @@ class TestCorrectionValidation():
     def test_hash_id_validation(db, corr):
         db_validate_blank(corr, 'hash_id')
         db_validate_max_length(corr, 'hash_id', 40)
+        corr.text = ''
         db_validate_null(corr, 'hash_id')
 
     def test_sentence_validation(db, corr):
@@ -46,5 +49,6 @@ class TestCorrectionValidation():
             corr.added_by = None
 
     def test_reason_validation(db, corr):
+        corr.save()
         db_validate_blank(corr, 'reason', True)
         db_validate_max_length(corr, 'reason', 200)

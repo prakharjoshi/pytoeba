@@ -6,6 +6,7 @@ for other constants that appear here.
 """
 
 LANGS = (
+    ('auto', 'Autodetect'),
     ("afr", "Afrikaans"),
     ("ain", "Ainu"),
     ("sqi", "Albanian"),

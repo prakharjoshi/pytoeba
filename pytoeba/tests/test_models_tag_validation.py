@@ -1,7 +1,8 @@
 from pytoeba.models import Tag, LocalizedTag, SentenceTag, Sentence
 from pytest import raises
 from django.db import IntegrityError
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError, ObjectDoesNotExist
+from django.contrib.auth.models import User
 from pytoeba.tests.test_helpers import (
     db_validate_blank, db_validate_null, db_validate_max_length
     )
@@ -15,19 +16,23 @@ class TestTagValidation():
     def test_default(db):
         assert len(Tag.objects.all()) == 0
         tag = Tag()
-        assert raises(IntegrityError, tag.save)
+        assert raises(ObjectDoesNotExist, tag.save)
 
     def test_minimum_defaults(db, tag):
         tag.save()
         assert len(Tag.objects.all()) == 1
         assert tag.id
-        assert tag.hash_id == 'hash2'
+        assert tag.hash_id
+        assert isinstance(tag.hash_id, str)
         assert tag.added_by.username == 'user'
         assert tag.added_on
 
     def test_hash_id_validation(db, tag):
         db_validate_blank(tag, 'hash_id')
         db_validate_max_length(tag, 'hash_id', 40)
+        user = User()
+        user.save()
+        tag.added_by = user
         db_validate_null(tag, 'hash_id')
 
     def test_added_by_validation(db, tag):
@@ -47,7 +52,7 @@ class TestLocalizedTagValidation():
     def test_minimum_defaults(db, loctag):
         loctag.save()
         assert len(LocalizedTag.objects.all()) == 1
-        assert loctag.tag.hash_id == 'hash2'
+        assert loctag.tag.hash_id
         assert loctag.text == 'test2'
         assert loctag.lang == 'eng'
 
@@ -82,18 +87,13 @@ class TestSentenceTagValidation():
         sentag.save()
         assert len(SentenceTag.objects.all()) == 1
         assert sentag.sentence.text == 'test'
-        assert sentag.localized_tag.text == 'test2'
-        assert sentag.tag.hash_id == 'hash2'
+        assert sentag.tag.hash_id
         assert sentag.added_by.username == 'user'
         assert sentag.added_on
 
     def test_sentence_validation(db, sentag):
         with raises(ValueError):
             sentag.sentence = None
-
-    def test_localized_tag_validation(db, sentag):
-        with raises(ValueError):
-            sentag.localized_tag = None
 
     def test_tag_validation(db, sentag):
         with raises(ValueError):

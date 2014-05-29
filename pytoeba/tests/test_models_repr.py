@@ -13,7 +13,7 @@ def cls_members():
     corr = Correction(sentence=sent)
     tag = Tag()
     loctag = LocalizedTag(tag=tag)
-    sentag = SentenceTag(sentence=sent, localized_tag=loctag)
+    sentag = SentenceTag(sentence=sent, tag=tag)
     audio = Audio(sentence=sent)
 
     return locals()

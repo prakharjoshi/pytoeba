@@ -1,7 +1,7 @@
 from pytoeba.models import Sentence
 from pytest import raises
 from django.db import IntegrityError
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError, ObjectDoesNotExist
 from pytoeba.tests.test_helpers import (
     db_validate_blank, db_validate_null, db_validate_max_length
     )
@@ -15,27 +15,29 @@ class TestSentenceValidation():
     def test_default(db):
         assert len(Sentence.objects.all()) == 0
         sent = Sentence()
-        assert raises(IntegrityError, sent.save)
+        assert raises(ObjectDoesNotExist, sent.save)
 
     def test_minimum_defaults(db, sent):
         sent.save()
         assert len(Sentence.objects.all()) == 1
-        assert sent.hash_id == 'hash'
+        assert sent.hash_id == 'cb76d46f29a17e92fb9851dcd079e606819e1324'
         assert sent.lang == 'eng'
         assert sent.text == 'test'
-        assert sent.sim_hash == 123
+        assert sent.sim_hash == 1461820776567902744
         assert sent.added_by.username == 'user'
-        assert sent.length == 1
+        assert sent.length == 4
         assert sent.added_on
         assert sent.modified_on
         assert sent.is_editable == True
         assert sent.is_active == False
         assert sent.has_correction == False
         assert sent.is_deleted == False
-        assert sent.link
-        assert len(sent.link.all()) == 0
+        assert sent.links
+        assert sent.owner == sent.added_by
+        assert len(sent.links.all()) == 0
 
     def test_sent_id_validation(db, sent):
+        sent.save()
         db_validate_blank(sent, 'sent_id', True)
         db_validate_null(sent, 'sent_id', True)
         sent.sent_id = ''
@@ -46,6 +48,12 @@ class TestSentenceValidation():
     def test_hash_id_validation(db, sent):
         db_validate_blank(sent, 'hash_id')
         db_validate_max_length(sent, 'hash_id', 40)
+        # should be impossible to set this to a non-auto value
+        sent.hash_id = None
+        sent.save()
+        assert sent.hash_id
+        assert sent.hash_id == 'cb76d46f29a17e92fb9851dcd079e606819e1324'
+        sent.text = ''
         db_validate_null(sent, 'hash_id')
 
     def test_lang_validation(db, sent):
@@ -62,6 +70,11 @@ class TestSentenceValidation():
         db_validate_null(sent, 'text')
 
     def test_sim_hash_validation(db, sent):
+        # setting a non-auto value should be impossible
+        sent.sim_hash = None
+        sent.save()
+        assert sent.sim_hash
+        sent.text = ''
         db_validate_null(sent, 'sim_hash')
 
     def test_added_by_validation(db, sent):
@@ -76,6 +89,12 @@ class TestSentenceValidation():
 
     def test_length_validation(db, sent):
         db_validate_blank(sent, 'length')
+        # setting a value manually should be impossible
+        sent.length = None
+        sent.save()
+        assert sent.length
+        assert sent.length == 4
+        sent.text = ''
         db_validate_null(sent, 'length')
 
     def test_text_lang_unique_validation(db, sent):

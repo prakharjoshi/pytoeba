@@ -23,11 +23,15 @@ def user(db):
 @pytest.fixture(scope='session')
 def sent(db, user):
     from pytoeba.models import Sentence
-    sent = Sentence(
-        hash_id='hash', lang='eng', text='test', sim_hash=123,
-        added_by=user, length=1
-        )
+    sent = Sentence(lang='eng', text='test', added_by=user)
     return sent
+
+
+@pytest.fixture(scope='session')
+def sent2(db, user):
+    from pytoeba.models import Sentence
+    sent2 = Sentence(lang='eng', text='test2', added_by=user)
+    return sent2
 
 
 @pytest.fixture(scope='session')
@@ -38,13 +42,10 @@ def sent_saved(db, sent):
 
 
 @pytest.fixture(scope='session')
-def link(db, sent_saved, user):
+def link(db, sent_saved, sent2, user):
     from pytoeba.models import Link, Sentence
     s1 = sent_saved
-    s2 = Sentence(
-        hash_id='hash2', lang='eng', text='test2', sim_hash=123,
-        added_by=user, length=1
-        )
+    s2 = sent2
     s2.save()
     link = Link(side1=s1, side2=s2, level=1)
     return link
@@ -60,16 +61,14 @@ def log(db, sent_saved, user):
 @pytest.fixture(scope='session')
 def corr(db, sent_saved, user):
     from pytoeba.models import Correction
-    corr = Correction(
-        hash_id='hash2', sentence=sent_saved, text='test2', added_by=user
-        )
+    corr = Correction(sentence=sent_saved, text='test2', added_by=user)
     return corr
 
 
 @pytest.fixture(scope='session')
 def tag(db, user):
     from pytoeba.models import Tag
-    tag = Tag(hash_id='hash2', added_by=user)
+    tag = Tag(added_by=user)
     return tag
 
 
@@ -87,7 +86,7 @@ def sentag(db, sent_saved, user, tag, loctag):
     tag.save()
     loctag.save()
     sentag = SentenceTag(
-        sentence=sent_saved, tag=tag, localized_tag=loctag, added_by=user
+        sentence=sent_saved, tag=tag, added_by=user
         )
     return sentag
 
@@ -113,7 +112,7 @@ def audio(db, request, user, sent_saved):
             os.remove(
                 os.path.join(
                     settings.MEDIA_ROOT,
-                    'hash' + '-' + 'hash2' + '.mp3'
+                    sent_saved.hash_id + '-' + 'hash2' + '.mp3'
                     )
                 )
         except OSError:
