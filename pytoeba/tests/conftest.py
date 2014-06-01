@@ -63,3 +63,29 @@ def corr(db, sent_saved, user):
     from pytoeba.models import Correction
     corr = Correction(sentence=sent_saved, text='test2', added_by=user)
     return corr
+
+
+@pytest.fixture(scope='session')
+def tag(db, user):
+    from pytoeba.models import Tag
+    tag = Tag(added_by=user)
+    return tag
+
+
+@pytest.fixture(scope='session')
+def loctag(db, tag):
+    from pytoeba.models import LocalizedTag
+    tag.save()
+    loctag = LocalizedTag(tag=tag, text='test2', lang='eng')
+    return loctag
+
+
+@pytest.fixture(scope='session')
+def sentag(db, sent_saved, user, tag, loctag):
+    from pytoeba.models import SentenceTag
+    tag.save()
+    loctag.save()
+    sentag = SentenceTag(
+        sentence=sent_saved, tag=tag, added_by=user
+        )
+    return sentag
