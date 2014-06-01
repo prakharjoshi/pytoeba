@@ -50,8 +50,16 @@ def link(db, sent_saved, sent2, user):
     link = Link(side1=s1, side2=s2, level=1)
     return link
 
+
 @pytest.fixture(scope='session')
 def log(db, sent_saved, user):
     from pytoeba.models import Log
     log = Log(sentence=sent_saved, type='cad', done_by=user, target_id=sent_saved.id)
     return log
+
+
+@pytest.fixture(scope='session')
+def corr(db, sent_saved, user):
+    from pytoeba.models import Correction
+    corr = Correction(sentence=sent_saved, text='test2', added_by=user)
+    return corr
