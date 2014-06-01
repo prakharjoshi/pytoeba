@@ -25,3 +25,27 @@ def sent(db, user):
     from pytoeba.models import Sentence
     sent = Sentence(lang='eng', text='test', added_by=user)
     return sent
+
+
+@pytest.fixture(scope='session')
+def sent2(db, user):
+    from pytoeba.models import Sentence
+    sent2 = Sentence(lang='eng', text='test2', added_by=user)
+    return sent2
+
+
+@pytest.fixture(scope='session')
+def sent_saved(db, sent):
+    sent_saved = sent
+    sent_saved.save()
+    return sent_saved
+
+
+@pytest.fixture(scope='session')
+def link(db, sent_saved, sent2, user):
+    from pytoeba.models import Link, Sentence
+    s1 = sent_saved
+    s2 = sent2
+    s2.save()
+    link = Link(side1=s1, side2=s2, level=1)
+    return link
