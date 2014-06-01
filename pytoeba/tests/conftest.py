@@ -49,3 +49,9 @@ def link(db, sent_saved, sent2, user):
     s2.save()
     link = Link(side1=s1, side2=s2, level=1)
     return link
+
+@pytest.fixture(scope='session')
+def log(db, sent_saved, user):
+    from pytoeba.models import Log
+    log = Log(sentence=sent_saved, type='cad', done_by=user, target_id=sent_saved.id)
+    return log
