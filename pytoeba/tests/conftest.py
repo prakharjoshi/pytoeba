@@ -89,3 +89,34 @@ def sentag(db, sent_saved, user, tag, loctag):
         sentence=sent_saved, tag=tag, added_by=user
         )
     return sentag
+
+
+@pytest.fixture(scope='session')
+def audio(db, request, user, sent_saved):
+    from pytoeba.models import Audio
+    from django.conf import settings
+    from django.core.files import File
+    path = os.path.join(
+        settings.MEDIA_ROOT, sent_saved.hash_id + '-' + 'hash2'
+        )
+    ft = open(path, 'w+')
+    f = File(ft)
+    audio = Audio(
+        hash_id='hash2', sentence=sent_saved, audio_file=f, added_by=user
+        )
+
+    def fin():
+        ft.close()
+        os.remove(path)
+        try:
+            os.remove(
+                os.path.join(
+                    settings.MEDIA_ROOT,
+                    sent_saved.hash_id + '-' + 'hash2' + '.mp3'
+                    )
+                )
+        except OSError:
+            pass
+    request.addfinalizer(fin)
+
+    return audio
