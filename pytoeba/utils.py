@@ -5,6 +5,7 @@ like hashing or getting a media path, etc...
 """
 
 from django.conf import settings
+from docutils.core import publish_parts
 import os
 
 
@@ -19,3 +20,6 @@ def get_audio_path(instance, filename):
         instance.sentence.hash_id + '-' + instance.hash_id + '.mp3'
         )
 
+
+def rest(text):
+    return publish_parts(text, writer_name='html')['body']
