@@ -6,10 +6,15 @@ so be extra careful with the ORM.
 from django.db import models
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
+
 from .choices import (
     LANGS, LOG_ACTIONS, PRIVACY, COUNTRIES, USER_STATUS, MARKUPS
     )
-from .utils import get_audio_path
+from .managers import SentenceManager
+from .utils import (
+    get_audio_path, get_user, now, sentence_presave, bulk_create, redraw_subgraph,
+    bulk_create
+    )
 
 User = settings.AUTH_USER_MODEL
 
@@ -58,6 +63,8 @@ class Sentence(models.Model):
         db_index=True, editable=False, blank=False, null=False
         )
 
+    objects = SentenceManager()
+
     class Meta:
         # this multicolumn index should make accessing sentences/lang pairs
         # fast enough for real-time duplication
@@ -69,6 +76,223 @@ class Sentence(models.Model):
         unique_together = (
             ('text', 'lang'),
         )
+
+    def __unicode__(self):
+        return '[%s - %s - %s]' % (self.text, self.lang, self.owner)
+
+    def save(self, *args, **kwargs):
+        """
+        Overrides django's default save() to autopopulate
+        hash fields when text is added or is updated.
+        """
+        self = sentence_presave(self)
+
+        if kwargs.has_key('update_fields'):
+            kwargs['update_fields'] += ['modified_on']
+            if 'text' in kwargs['update_fields']:
+                kwargs['update_fields'] += ['length', 'sim_hash']
+
+        super(Sentence, self).save(*args, **kwargs)
+
+    def edit(self, text):
+        """
+        Edits the current sentence instance. If the
+        sentence is locked throws an error. Updates
+        the text field with a given one and adds
+        a Log entry.
+        """
+        user = get_user()
+        if not self.is_editable:
+            raise NotEditableError
+        self.text = text
+        self.save(update_fields=['text'])
+        Log.objects.create(
+            sentence=self, type='sed', done_by=user, change_set=text,
+            source_hash_id=self.hash_id, source_lang=self.lang
+            )
+
+    def delete(self):
+        """
+        Deletes the current sentence instance. Sets is_deleted
+        to false and adds a Log entry.
+        """
+        user = get_user()
+        self.is_deleted = True
+        self.save(update_fields=['is_deleted'])
+        Log.objects.create(
+            sentence=self, type='srd', done_by=user, source_hash_id=self.hash_id,
+            source_lang=self.lang
+            )
+
+    def lock(self):
+        """
+        Locks the current sentence instance by setting
+        is_editable to false and adds a Log entry.
+        """
+        user = get_user()
+        self.is_editable = False
+        self.save(update_fields=['is_editable'])
+        Log.objects.create(
+            sentence=self, type='sld', done_by=user, source_hash_id=self.hash_id,
+            source_lang=self.lang
+            )
+
+    def unlock(self):
+        """
+        Unlocks the current sentence instance by setting
+        is_editable to true and adds a Log entry.
+        """
+        user = get_user()
+        self.is_editable = True
+        self.save(update_fields=['is_editable'])
+        Log.objects.create(
+            sentence=self, type='sul', done_by=user, source_hash_id=self.hash_id,
+            source_lang=self.lang
+            )
+
+    def adopt(self):
+        """
+        Assigns the current sentence to a user by setting
+        the user object on the owner field and adds a log
+        entry.
+        """
+        user = get_user()
+        self.owner = user
+        self.save(update_fields=['owner'])
+        Log.objects.create(
+            sentence=self, type='soa', done_by=user, source_hash_id=self.hash_id,
+            source_lang=self.lang
+            )
+
+    def release(self):
+        """
+        Releases the current sentence from the user's
+        ownership by setting the owner field to null/none
+        and adds a log entry.
+        """
+        user = get_user()
+        self.owner = None
+        self.save(update_fields=['owner'])
+        Log.objects.create(
+            sentence=self, type='sor', done_by=user, source_hash_id=self.hash_id,
+            source_lang=self.lang
+            )
+
+    def change_language(self, lang):
+        """
+        Changes the language on the current sentence
+        by updating the lang field and adds a log entry.
+        """
+        user = get_user()
+        old_lang = self.lang
+        self.lang = lang
+        self.save(update_fields=['lang'])
+        Log.objects.create(
+            sentence=self, type='slc', done_by=user, source_hash_id=self.hash_id,
+            source_lang=old_lang, target_lang=self.lang
+            )
+
+    @classmethod
+    def _tuplize_links_unlinks(cls, source, target, user, _type='link'):
+        link_tuples = []
+        logs = []
+        if _type == 'link':
+            _type = 'lad'
+        elif _type == 'unlink':
+            _type = 'lrd'
+        else:
+            raise Exception("Operation not supported")
+
+        for sent1 in source:
+            for sent2 in target:
+                link_tuples.append((sent1.id, sent2.id))
+                link_tuples.append((sent2.id, sent1.id))
+                logs.append(
+                    Log(
+                        sentence=sent1, type=_type, done_by=user,
+                        source_hash_id=sent1.hash_id, source_lang=sent1.lang,
+                        target_id=sent2.id, target_hash_id=sent2.hash_id,
+                        target_lang=sent2.lang
+                        )
+                    )
+                logs.append(
+                    Log(
+                        sentence=sent2, type=_type, done_by=user,
+                        source_hash_id=sent2.hash_id, source_lang=sent2.lang,
+                        target_id=sent1.id, target_hash_id=sent1.hash_id,
+                        target_lang=sent1.lang
+                        )
+                    )
+
+        return link_tuples, logs
+
+    @classmethod
+    def _link_or_unlink(
+        cls, user, source_links=[], target_links=[], source_unlinks=[],
+        target_unlinks=[]
+            ):
+        """
+        Simple wrapper around pytoeba.utils.redraw_subgraph.
+        Turns links into tuples and adds log entries.
+        """
+
+        links = []
+        unlinks = []
+        logs = []
+
+        if source_links:
+            links, link_logs = cls._tuplize_links_unlinks(
+                                    source_links, target_links, user
+                                    )
+
+        if source_unlinks:
+            unlinks, unlink_logs = cls._tuplize_links_unlinks(
+                                        source_unlinks, target_unlinks, user,
+                                        _type='unlink'
+                                        )
+
+        redraw_subgraph(links=links, unlinks=unlinks)
+        logs.extend(link_logs)
+        logs.extend(unlink_logs)
+        bulk_create(logs)
+
+    def link(self, sent):
+        """
+        Adds a link between two sentences bidirectionally and
+        adds 2 log entries. Uses special methods in .utils to
+        recalculate the graph if needed.
+        """
+        user = get_user()
+        self._link_or_unlink(user, source_links=[self], target_links=[sent])
+
+    def bulk_link(self, sents):
+        """
+        Bulk links the sentence instance to a sentence queryset
+        """
+        user = get_user()
+        self._link_or_unlink(user, source_links=[self], target_links=sents)
+
+
+    def unlink(self, sent):
+        """
+        Removes a link between two sentences bidirectionally and
+        adds 2 log entries.
+        """
+        user = get_user()
+        self._link_or_unlink(user, source_unlinks=[self], target_unlinks=[sent])
+
+    def bulk_unlink(self, sents):
+        user = get_user()
+        self._link_or_unlink(user, source_unlinks=[self], target_unlinks=sents)
+
+    def translate(self, text, lang='auto'):
+        """
+        Translates the current sentence by adding a new
+        sentence and then linking it to the current
+        sentence. Leaves logging to the add/link calls.
+        """
+        sent = self.add(text, lang)
+        self.link(sent)
 
 
 class Link(models.Model):
