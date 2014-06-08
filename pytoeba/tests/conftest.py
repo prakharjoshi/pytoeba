@@ -15,7 +15,7 @@ def pytest_configure():
 @pytest.fixture(scope='session')
 def user(db):
     from pytoeba.models import PytoebaUser
-    user = User(username='user', password='pass')
+    user = PytoebaUser(username='user', password='pass')
     user.save()
     return user
 
