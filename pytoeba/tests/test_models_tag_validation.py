@@ -32,7 +32,6 @@ class TestTagValidation():
         user = PytoebaUser()
         user.save()
         tag.added_by = user
-        db_validate_null(tag, 'hash_id')
 
     def test_added_by_validation(db, tag):
         with raises(ValueError):
