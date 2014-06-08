@@ -227,6 +227,31 @@ class SentenceQuerySet(QuerySet):
         sent = self.add(text, lang)
         sent.bulk_link(sents)
 
+    def auto_force_correction(self):
+        """
+        Autoforces corrections on all sentences
+        in the queryset. Mirrors the instance method.
+        """
+        user = get_user()
+        sents = list(self.all())
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+        Correction = get_model('pytoeba', 'Correction')
+
+        for sent in sents:
+            corr = Correction.objects.filter(sentence=sent)[0]
+            sent.text = corr.text
+            logs.append(
+                Log(
+                    sentence=sent, type='cfd', done_by=user, change_set=corr.text,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang,
+                    target_id=corr.id, target_hash_id=corr.hash_id
+                    )
+                )
+
+        bulk_update(sents, update_fields=['text'])
+        bulk_create(logs)
+
 
 class SentenceManager(Manager):
 
@@ -341,3 +366,90 @@ class SentenceManager(Manager):
     def translate(self, sent_id, text, lang='auto'):
         sent = self.show(sent_id)
         sent.translate(text, lang)
+
+    def correct(self, sent_id, text, reason=''):
+        sent = self.show(sent_id)
+        sent.correct(text, reason)
+
+    def accept_correction(self, sent_id, corr_id):
+        sent = self.show(sent_id)
+        sent.accept_correction(corr_id)
+
+    def reject_correction(self, sent_id, corr_id):
+        sent = self.show(sent_id)
+        sent.reject_correction(corr_id)
+
+    def force_correction(self, sent_id, corr_id):
+        sent = self.show(sent_id)
+        sent.force_correction(corr_id)
+
+    def auto_force_correction(self, sent_id):
+        sent = self.show(sent_id)
+        sent.auto_force_correction()
+
+
+class CorrectionQuerySet(QuerySet):
+
+    def delete(self):
+        for corr in self.all():
+            corr.delete()
+
+    def accept(self):
+        for corr in self.all():
+            corr.accept()
+
+    def reject(self):
+        for corr in self.all():
+            corr.reject()
+
+    def force(self):
+        for corr in self.all():
+            corr.force()
+
+
+class CorrectionManager(Manager):
+
+    def get_query_set(self):
+        return CorrectionQuerySet(self.model, using=self._db)
+
+    def add_to_obj(self, sent, text, reason=''):
+        user = get_user()
+        corr = self.create(
+            sentence=sent, text=text, added_by=user, reason=reason
+            )
+        Log = get_model('pytoeba', 'Log')
+        Log.objects.create(
+            sentence=sent, type='cad', done_by=user, change_set=corr.text,
+            target_id=corr.hash_id
+            )
+        return corr
+
+    def add(self, sent_id, text, reason=''):
+        Sentence = get_model('pytoeba', 'Sentence')
+        sent = Sentence.objects.show(sent_id)
+        corr = self.add_to_obj(sent, text, reason)
+        return corr
+
+    def edit(self, corr_id, text):
+        corr = self.get(hash_id=corr_id)
+        corr.edit(text)
+
+    def delete(self, corr_id):
+        corr = self.get(hash_id=corr_id)
+        corr.delete()
+
+    def accept(self, corr_id):
+        corr = self.get(hash_id=corr_id)
+        corr.accept()
+
+    def reject(self, corr_id):
+        corr = self.get(hash_id=corr_id)
+        corr.reject()
+
+    def force(self, corr_id):
+        corr = self.get(hash_id=corr_id)
+        corr.force()
+
+    def auto_force(self, sent_id):
+        sent = Sentence.objects.show(sent_id)
+        sent.auto_force_correction()

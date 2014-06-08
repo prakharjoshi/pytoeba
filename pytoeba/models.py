@@ -10,10 +10,10 @@ from django.contrib.auth.models import AbstractUser
 from .choices import (
     LANGS, LOG_ACTIONS, PRIVACY, COUNTRIES, USER_STATUS, MARKUPS
     )
-from .managers import SentenceManager
+from .managers import SentenceManager, CorrectionManager
 from .utils import (
-    get_audio_path, get_user, now, sentence_presave, bulk_create, redraw_subgraph,
-    bulk_create
+    get_audio_path, get_user, now, sentence_presave, correction_presave,
+    bulk_create, redraw_subgraph, bulk_create
     )
 from .exceptions import NotEditableError
 
@@ -295,6 +295,83 @@ class Sentence(models.Model):
         sent = self.add(text, lang)
         self.link(sent)
 
+    def correct(self, text, reason=''):
+        """
+        Creates a correction object with the given text
+        and automatically links it to the current sentence
+        and logs the operation.
+        """
+        Correction.objects.add_to_obj(self, text, reason)
+
+    def accept_correction(self, corr_id):
+        """
+        Takes the id of an existing correction linked to
+        the current sentence and (through accept_corr_obj)
+        sets the sentence text field to that correction's
+        text field (applying it on the sentence). It then
+        rejects other corrections that are submitted for
+        this sentence at that time. Logs all operations.
+        """
+        corr = Correction.objects.get(hash_id=corr_id)
+        self.accept_corr_obj(corr)
+
+    def accept_corr_obj(self, corr):
+        user = get_user()
+        self.text = corr.text
+        self.save(update_fields=['text'])
+        Log.objects.create(
+            sentence=self, type='cac', done_by=user, change_set=self.text,
+            source_hash_id=self.hash_id, source_lang=self.lang,
+            target_id=corr.id, target_hash_id=corr.hash_id
+            )
+        corr._base_delete()
+        Correction.objects.filter(sentence=self).reject()
+        self.has_correction = False
+        self.save(update_fields=['has_correction'])
+
+    def reject_correction(self, corr_id):
+        """
+        Removes a submitted correction by id. Logs the
+        operation.
+        """
+        corr = Correction.objects.get(hash_id=corr_id)
+        corr.reject()
+
+    def force_correction(self, corr_id):
+        """
+        Essentially the same behavior as accept_correction
+        except the log entry says it was forced by another
+        user and not accepted by the owner himself.
+        """
+        corr = Correction.objects.get(hash_id=corr_id)
+        self.force_corr_obj(corr)
+
+    def force_corr_obj(self, corr):
+        user = get_user()
+        self.text = corr.text
+        self.save(update_fields=['text'])
+        Log.objects.create(
+            sentence=self, type='cfd', done_by=user, change_set=corr.text,
+            source_hash_id=self.hash_id, source_lang=self.lang,
+            target_id=corr.id, target_hash_id=corr.hash_id
+            )
+        corr._base_delete()
+        Correction.objects.filter(sentence=self).reject()
+        self.has_correction = False
+        self.save(update_fields=['has_correction'])
+
+    def auto_force_correction(self):
+        """
+        Enforces one correction (earliest submitted by id) on the
+        current sentence from the set of submitted corrections for
+        it. Calls force_corr_obj and therefore shares the same
+        behavior as force_correction. Mainly for use by help bots
+        that run periodically.
+        """
+        corrs = Correction.objects.filter(sentence=self)
+        corr = corrs[0]
+        self.force_corr_obj(corr)
+
 
 class Link(models.Model):
     """
@@ -410,8 +487,97 @@ class Correction(models.Model):
         )
     reason = models.CharField(max_length=200, blank=True)
 
+    objects = CorrectionManager()
+
     def __unicode__(self):
         return '%s => %s' % (self.sentence.text, self.text)
+
+    def save(self, *args, **kwargs):
+        """
+        Autopopulates the hash_id. Also handles adding
+        the modified_on field to selective field updates.
+        If the object is saved for the first time
+        has_correction is handled on the sentence.
+        """
+        self = correction_presave(self)
+
+        if kwargs.has_key('update_fields'):
+            kwargs['update_fields'] += ['modified_on']
+
+        super(Correction, self).save(*args, **kwargs)
+
+    def edit(self, text):
+        """
+        Edits the text field on a given correction and
+        logs the operation.
+        """
+        user = get_user()
+        self.text = text
+        self.save(update_fields=['text'])
+        sent = self.sentence
+        Log.objects.create(
+            sentence=sent, type='ced', done_by=user, change_set=text,
+            source_hash_id=sent.hash_id, source_lang=sent.lang,
+            target_id=self.id, target_hash_id=self.hash_id
+            )
+
+    def _base_delete(self):
+        super(Correction, self).delete()
+
+    @classmethod
+    def _get_corrections_by_sent(cls, sent):
+        return cls.objects.filter(sentence=sent)
+
+    def delete(self):
+        """
+        Deletes a correction. This is the analog of rejection but
+        done by the submitter of the correction himself. Handles
+        setting has_correction to false on the sentence when the
+        last attached correction is deleted for that sentence.
+        """
+        user = get_user()
+        self._base_delete()
+        sent = self.sentence
+        Log.objects.create(
+            sentence=sent, type='crd', done_by=user,
+            source_hash_id=sent.hash_id, source_lang=sent.lang,
+            target_id=self.id, target_hash_id=self.hash_id
+            )
+        sent_corrs = self._get_corrections_by_sent(sent)
+        if not sent_corrs:
+            sent.has_correction = False
+            sent.save(update_fields=['has_correction'])
+
+    def reject(self):
+        """
+        Provides the base implementation for sentence.reject_correction
+        and sentence.reject_corr_obj. They should all behave similarly.
+        """
+        user = get_user()
+        self._base_delete()
+        sent = self.sentence
+        Log.objects.create(
+            sentence=sent, type='crj', done_by=user,
+            source_hash_id=sent.hash_id, source_lang=sent.lang,
+            target_id=self.id, target_hash_id=self.hash_id
+            )
+
+    def accept(self):
+        """
+        Uses sentence.accept_corr_obj as its base implementation
+        as the opposite would've entailed a performance penalty.
+        Should have the same behavior as sentence.accept_correction.
+        """
+        # a read is probably faster than a join
+        # use the ones proxied on sentence
+        self.sentence.accept_corr_obj(self)
+
+    def force(self):
+        """
+        Proxy to the implementation on Sentence. Same behavior as
+        sentence.force_correction.
+        """
+        self.sentence.force_corr_obj(self)
 
 
 class Tag(models.Model):

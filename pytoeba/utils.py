@@ -82,6 +82,16 @@ def sentence_presave(sent):
     return sent
 
 
+def correction_presave(corr):
+    if not corr.id and corr.sentence:
+        corr.hash_id = uuid4()
+        sent = corr.sentence
+        sent.has_correction = True
+        sent.save(update_fields=['has_correction'])
+
+    return corr
+
+
 def rest(text):
     return publish_parts(text, writer_name='html')['body']
 
