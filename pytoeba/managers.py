@@ -252,6 +252,101 @@ class SentenceQuerySet(QuerySet):
         bulk_update(sents, update_fields=['text'])
         bulk_create(logs)
 
+    def add_tag(self, text):
+        """
+        Adds an existing tag to all sentences
+        in the queryset. Mirrors the instance
+        method.
+        """
+        user = get_user()
+        sents = list(self.all())
+        sentags = []
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+        LocalizedTag = get_model('pytoeba', 'LocalizedTag')
+        SentenceTag = get_model('pytoeba', 'SentenceTag')
+        tag = LocalizedTag.objects.get(text=text).tag
+
+        for sent in sents:
+            sentags.append(
+                SentenceTag(
+                    sentence=sent, tag=tag, added_by=user
+                    )
+                )
+            logs.append(
+                Log(
+                    sentence=sent, type='cfd', done_by=user, change_set=corr.text,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang,
+                    target_id=corr.id, target_hash_id=corr.hash_id
+                    )
+                )
+
+        bulk_create(sentags)
+        bulk_create(logs)
+
+    def add_new_tag(self, text, lang):
+        """
+        Creates a new tag then adds it to all
+        sentences in the queryset. Mirrors the
+        instance method.
+        """
+        user = get_user()
+        sents = list(self.all())
+        sentags = []
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+        Tag = get_model('pytoeba', 'Tag')
+        SentenceTag = get_model('pytoeba', 'SentenceTag')
+        tag = Tag.objects.add_new(text, lang)
+
+        for sent in sents:
+            sentags.append(
+                SentenceTag(
+                    sentence=sent, tag=tag, added_by=user
+                    )
+                )
+            logs.append(
+                Log(
+                    sentence=sent, type='cfd', done_by=user, change_set=corr.text,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang,
+                    target_id=corr.id, target_hash_id=corr.hash_id
+                    )
+                )
+
+        bulk_create(sentags)
+        bulk_create(logs)
+
+    def delete_tag(self, text):
+        """
+        Removes a tag from all sentences
+        in the queryset. Mirrors the
+        instance method.
+        """
+        user = get_user()
+        sents = list(self.all())
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+        LocalizedTag = get_model('pytoeba', 'LocalizedTag')
+        SentenceTag = get_model('pytoeba', 'SentenceTag')
+
+        loctag = LocalizedTag.objects.get(text=text)
+        sentags = list(SentenceTag.objects.filter(
+            sentence__in=sents, tag_id=loctag.tag_id
+            ))
+
+        tag_hash_id = loctag.tag.hash_id
+        for sent in sents:
+            logs.append(
+                Log(
+                    sentence=sent, type='trd', done_by=user,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang,
+                    target_id=loctag.tag_id, target_hash_id=tag_hash_id
+                    )
+                )
+
+        bulk_delete(sentags)
+        bulk_create(logs)
+
 
 class SentenceManager(Manager):
 
@@ -387,6 +482,18 @@ class SentenceManager(Manager):
         sent = self.show(sent_id)
         sent.auto_force_correction()
 
+    def add_tag(self, sent_id, text):
+        sent = self.show(sent_id)
+        sent.add_tag(text)
+
+    def add_new_tag(self, sent_id, text, lang):
+        sent = self.show(sent_id)
+        sent.add_new_tag(text)
+
+    def delete_tag(self, sent_id, text):
+        sent = self.show(sent_id)
+        sent.delete_tag(text)
+
 
 class CorrectionQuerySet(QuerySet):
 
@@ -453,3 +560,29 @@ class CorrectionManager(Manager):
     def auto_force(self, sent_id):
         sent = Sentence.objects.show(sent_id)
         sent.auto_force_correction()
+
+
+class TagManager(Manager):
+
+    def get_localization(self, tag_id, lang):
+        tag = self.get(hash_id=tag_id)
+        tag.get_localization(lang)
+
+    def get_all_localizations(self, tag_id):
+        tag = self.get(hash_id=tag_id)
+        tag.get_all_localizations()
+
+    def merge(self, source_id, target_id):
+        source = self.get(hash_id=source_id)
+        target = self.get(hash_id=target_id)
+        source.merge(target)
+
+    def translate(self, tag_id, text, lang):
+        tag = self.get(hash_id=tag_id)
+        tag.translate(text, lang)
+
+    def add_new(self, text, lang):
+        user = get_user()
+        tag = self.create(added_by=user)
+        tag.translate(text, lang)
+        return tag

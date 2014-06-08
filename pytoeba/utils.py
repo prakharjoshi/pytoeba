@@ -92,6 +92,13 @@ def correction_presave(corr):
     return corr
 
 
+def tag_presave(tag):
+    if not tag.id:
+        tag.hash_id = uuid4()
+
+    return tag
+
+
 def rest(text):
     return publish_parts(text, writer_name='html')['body']
 

@@ -10,10 +10,10 @@ from django.contrib.auth.models import AbstractUser
 from .choices import (
     LANGS, LOG_ACTIONS, PRIVACY, COUNTRIES, USER_STATUS, MARKUPS
     )
-from .managers import SentenceManager, CorrectionManager
+from .managers import SentenceManager, CorrectionManager, TagManager
 from .utils import (
     get_audio_path, get_user, now, sentence_presave, correction_presave,
-    bulk_create, redraw_subgraph, bulk_create
+    tag_presave, bulk_create, redraw_subgraph, bulk_create
     )
 from .exceptions import NotEditableError
 
@@ -372,6 +372,50 @@ class Sentence(models.Model):
         corr = corrs[0]
         self.force_corr_obj(corr)
 
+    def add_tag(self, text):
+        """
+        Adds an existing tag to the current sentence. Creates a
+        SentenceTag object and logs the operation.
+        """
+        loctag = LocalizedTag.objects.get(text=text)
+        self.add_tag_obj(loctag.tag)
+
+    def add_new_tag(self, text, lang):
+        """
+        Adds a brand new tag (node) with the text given as a
+        localization then adds it to the current sentence with
+        a SentenceTag object. Logs the operation.
+        """
+        tag = Tag.objects.add_new(text, lang)
+        self.add_tag_obj(tag)
+
+    def add_tag_obj(self, tag):
+        user = get_user()
+        sentag = SentenceTag.objects.create(
+            sentence=self, tag=tag, added_by=user
+            )
+        Log.objects.create(
+            sentence=self, type='tad', done_by=user,
+            source_hash_id=self.hash_id, source_lang=self.lang,
+            target_id=sentag.tag.id, target_hash_id=sentag.tag.hash_id
+            )
+
+    def delete_tag(self, text):
+        """
+        Removes the tag from the current sentence by deleting
+        the SentenceTag object storing this info. The actual
+        Tag object is not affected.
+        """
+        user = get_user()
+        loctag = LocalizedTag.objects.get(text=text)
+        sentag = SentenceTag.objects.get(sentence=self, tag_id=loctag.tag_id)
+        sentag.delete()
+        Log.objects.create(
+            sentence=self, type='trd', done_by=user,
+            source_hash_id=self.hash_id, source_lang=self.lang,
+            target_id=sentag.tag_id, target_hash_id=sentag.tag.hash_id
+            )
+
 
 class Link(models.Model):
     """
@@ -599,8 +643,48 @@ class Tag(models.Model):
         db_index=True, auto_now_add=True, editable=False
         )
 
+    objects = TagManager()
+
     def __unicode__(self):
         return 'Tag ' + str(self.id)
+
+    def save(self, *args, **kwargs):
+        """
+        Autopopulates the hash_id.
+        """
+        self = tag_presave(self)
+
+        super(Tag, self).save()
+
+    def get_localization(self, lang):
+        """
+        Gets a localization for this tag by language.
+        """
+        return LocalizedTag.objects.get(tag=self, lang=lang)
+
+    def get_all_localizations(self):
+        """
+        Gets all localizations referencing this tag.
+        """
+        return LocalizedTag.objects.filter(tag=self)
+
+    def merge(self, tag):
+        """
+        Remaps localizations and tagged sentences from one
+        tag to another then removes then now defunct tag.
+        This operation isn't logged for now.
+        """
+        sentags = SentenceTag.objects.filter(tag=tag)
+        sentags.update(tag=self)
+        loctags = LocalizedTag.objects.filter(tag=tag)
+        loctags.update(tag=self)
+        tag.delete()
+
+    def translate(self, text, lang):
+        """
+        Adds a localization to an existing tag. Not logged yet.
+        """
+        LocalizedTag.objects.create(tag=self, text=text, lang=lang)
 
 
 class LocalizedTag(models.Model):
