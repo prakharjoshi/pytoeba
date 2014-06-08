@@ -15,6 +15,7 @@ from .utils import (
     get_audio_path, get_user, now, sentence_presave, bulk_create, redraw_subgraph,
     bulk_create
     )
+from .exceptions import NotEditableError
 
 User = settings.AUTH_USER_MODEL
 
