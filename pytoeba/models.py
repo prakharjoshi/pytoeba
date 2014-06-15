@@ -1181,3 +1181,99 @@ class Comment(models.Model):
     def hide(self):
         self.is_public = False
         self.save(update_fields=['is_public'])
+
+
+class Wall(models.Model):
+    category = models.CharField(db_index=True, max_length=100)
+
+    def __unicode__(self):
+        return self.category
+
+    def get_threads(self):
+        return WallThread.objects.filter(wall=self)
+
+
+class WallThread(models.Model):
+    wall = models.ForeignKey(Wall, related_name='threads')
+    subject = models.CharField(max_length=100)
+    added_by = models.ForeignKey(User, editable=False)
+    added_on = models.DateTimeField(auto_now_add=True, editable=False)
+    sticky = models.BooleanField(default=False)
+    subscribers = models.ManyToManyField(
+        User, related_name='subscriptions', blank=True
+        )
+
+    def __unicode__(self):
+        return self.subject
+
+    @property
+    def modified_on(self):
+        self.thread_posts.all().order_by('-modified_on')[0].modified_on
+
+    def get_posts(self):
+        return WallPost.objects.filter(thread=self, is_public=True)
+
+    def make_sticky(self):
+        self.sticky = True
+        self.save(update_fields=['sticky'])
+
+    @classmethod
+    def get_sticky(cls):
+        return cls.objects.filter(sticky=True)
+
+    def subscribe(self):
+        user = get_user()
+        self.subscribers.add(user)
+        # TODO add some signal here
+
+    def add_new_post(self, subject, body):
+        user = get_user()
+        thread = WallThread.objects.create(
+            added_by=user, wall=self, subject=subject
+            )
+        post = WallPost.objects.create(
+            wall=self, thread=thread, added_by=user, subject=subject,
+            body_text=body
+        )
+        return post
+
+
+class WallPost(models.Model):
+    wall = models.ForeignKey(Wall, related_name='wall_posts')
+    thread = models.ForeignKey(WallThread, related_name='thread_posts')
+    subject = models.CharField(max_length=100)
+    added_by = models.ForeignKey(User, editable=False)
+    added_on = models.DateTimeField(
+        db_index=True, auto_now_add=True, editable=False
+        )
+    modified_on = models.DateTimeField(db_index=True, auto_now=True)
+    body_text = models.TextField()
+    body_markup = models.CharField(max_length=2, choices=MARKUPS, default='')
+    body_html = models.TextField()
+    is_public = models.BooleanField(db_index=True, default=True)
+
+    def __unicode__(self):
+        return self.subject
+
+    def save(self, *args, **kwargs):
+        self.body_text = escape(self.body_text)
+        self.body_html = markup_to_html(self.body_text, self.body_markup)
+        super(WallPost, self).save(*args, **kwargs)
+
+    def hide(self):
+        self.is_public = False
+        self.save(update_fields=['is_public'])
+
+    def edit(self, body, markup=''):
+        fields = ['body_text', 'body_html']
+        self.body_text = body
+        if markup:
+            self.body_markup = markup
+            fields.append('body_markup')
+        self.save(update_fields=fields)
+
+    def delete(self):
+        thread = self.thread
+        super(WallPost, self).delete()
+        if not thread.thread_posts.all():
+            thread.delete()
