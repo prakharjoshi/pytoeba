@@ -184,6 +184,19 @@ USER_STATUS = (
     ('u', 'Normal User'),
 )
 
+PROFICIENCY = (
+    ('n', 'Native'),
+    ('f', 'Fluent'),
+    ('a', 'Advanced'),
+    ('i', 'Intermediate'),
+    ('b', 'Beginner'),
+)
+
+VOTE_ON = (
+    ('lp', 'Language Proficiency'),
+    ('sp', 'Status Promotion'),
+)
+
 MARKUPS_SUPPORTED = {
     'md': ('Markdown', markdown),
     'rs': ('reStructuredText', rest),

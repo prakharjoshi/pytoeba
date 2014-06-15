@@ -103,6 +103,15 @@ def rest(text):
     return publish_parts(text, writer_name='html')['body']
 
 
+def markup_to_html(text, markup):
+    from .choices import MARKUPS_SUPPORTED
+
+    if markup in MARKUPS_SUPPORTED:
+        converter = MARKUPS_SUPPORTED[markup][1]
+        return converter(text)
+    return text
+
+
 def import_path(path):
     module = '.'.join(path.split('.')[:-1])
     cls = path.split('.')[-1]

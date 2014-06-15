@@ -1,6 +1,8 @@
 from django.db.models.manager import Manager
 from django.db.models.query import QuerySet
 from django.db.models.loading import get_model
+from django.contrib.auth.models import UserManager
+from django.contrib.auth import authenticate
 
 from .utils import get_user, now, bulk_update, bulk_create, bulk_delete
 
@@ -586,3 +588,58 @@ class TagManager(Manager):
         tag = self.create(added_by=user)
         tag.translate(text, lang)
         return tag
+
+
+class PytoebaUserManager(UserManager):
+
+    def _create_user(self, username, email, password,
+                     is_staff, is_superuser, **extra_fields):
+        """
+        Overrides default _create_user in django's auth package.
+        This is used by create_user and create_superuser on the
+        default manager.
+        """
+        _now = now()
+        if not username:
+            raise ValueError('The given username must be set')
+        email = self.normalize_email(email)
+        user = self.model(username=username, email=email,
+                          is_staff=is_staff, is_active=False,
+                          is_superuser=is_superuser, last_login=_now,
+                          date_joined=_now, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
+    def _verify_status_obj(self, user, status='t'):
+        if user.status == status:
+            return True
+        if user.status != status and \
+        user.with_status_vote >= REQUIRED_STATUS_VOTES:
+            user.status = status
+            user.with_status_votes = 0
+            user.against_status_votes = 0
+            user.save(update_fields=[
+                'status', 'with_status_votes', 'against_status_votes'
+                ])
+            return True
+        return False
+
+    def verify_status(self, username, status='t'):
+        user = self.get(username=username)
+        return self._verify_status_obj(user, status)
+
+    def authenticate(username, password):
+        return authenticate(username, password)
+
+    def delete_expired_users(self):
+        """
+        Checks for expired users and deletes them.
+        Returns a list containing the deleted users.
+        """
+        deleted_users = []
+        for user in self.filter(is_staff=False, is_active=False):
+            if user.userena_signup.activation_key_expired():
+                deleted_users.append(user)
+                user.delete()
+        return deleted_users

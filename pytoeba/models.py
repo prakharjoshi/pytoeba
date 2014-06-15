@@ -6,14 +6,21 @@ so be extra careful with the ORM.
 from django.db import models
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
+from django.contrib.auth import login
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+from django.utils.html import escape
 
 from .choices import (
-    LANGS, LOG_ACTIONS, PRIVACY, COUNTRIES, USER_STATUS, MARKUPS
+    LANGS, LOG_ACTIONS, PRIVACY, COUNTRIES, PROFICIENCY, VOTE_ON, USER_STATUS,
+    MARKUPS
     )
-from .managers import SentenceManager, CorrectionManager, TagManager
+from .managers import (
+    SentenceManager, CorrectionManager, TagManager, PytoebaUserManager
+    )
 from .utils import (
     get_audio_path, get_user, now, sentence_presave, correction_presave,
-    tag_presave, bulk_create, redraw_subgraph, bulk_create
+    tag_presave, uuid, bulk_create, redraw_subgraph, bulk_create
     )
 from .exceptions import NotEditableError
 
@@ -790,5 +797,285 @@ class PytoebaUser(AbstractUser):
     about_markup = models.CharField(max_length=2, choices=MARKUPS, default='')
     about_html = models.TextField()
 
+    objects = PytoebaUserManager()
+
     def __unicode__(self):
         return self.username
+
+    def save(self, *args, **kwargs):
+        if self.about_text:
+            self.about_text = escape(self.about_text)
+            self.about_html = markup_to_html(
+                self.about_text, self.about_markup
+                )
+        super(PytoebaUser, self).save(*args, **kwargs)
+
+    def activate_account(self):
+        """
+        Sets user to active. Not to be used
+        directly.
+        """
+        if not self.is_active:
+            self.is_active = True
+            self.save(update_fields=['is_active'])
+
+    def deactivate_account(self):
+        """
+        Sets user to inactive. Not to be used directly.
+        """
+        if self.is_active:
+            self.is_active = False
+            self.save(update_fields=['is_active'])
+
+    def minimum_profile_filled(self):
+        if self.is_active:
+            return True
+
+        if self.username and self.email_confirmed and \
+            len(self.userlang_set.all()) >= 1:
+            self.activate_account()
+            return True
+
+        return False
+
+    @property
+    def email_confirmed(self):
+        """
+        Checks if there's an unconfirmed email
+        pending. An empty string would return
+        True.
+        """
+        return not bool(self.email_unconfirmed)
+
+    def generate_email_confirmation_key(self):
+        """
+        Generates an activation key using a salted
+        sha1 hash.
+        """
+        key = uuid4() + uuid4()
+        self.email_confirmation_key = key
+        self.email_confirmation_key_created_on = now()
+
+    def reissue_email_confirmation_key(self):
+        """
+        Regenerates an activation key and resets the
+        activation period for the user.
+        """
+        self.generate_email_confirmation_key()
+        self.date_joined = now()
+        self.save()
+
+    @property
+    def email_confirmation_key_expired(self):
+        """
+        Checks if the confirmation code has been issued
+        for too long to be accepted. The grace period
+        is defined in settings.CONFIRMATION_PERIOD.
+        """
+        expiration_date = self.date_joined + timedelta(settings.CONFIRMATION_PERIOD)
+        if now() >= expiration_date:
+            return True
+        return False
+
+    def confirm_email(self, key):
+        """
+        Confirms the user's email given the confirmation
+        key sent to his e-mail.
+        """
+        if self.email_confirmation_key_expired:
+            return False
+        
+        if self.email_confirmation_key == key:
+            self.email_unconfirmed = ''
+            self.save(update_fields=['email_unconfirmed'])
+            return True
+
+        return False
+
+    def reset_password(old, new):
+        """
+        Resets the user password given the old
+        password. Returns True if successful.
+        """
+        if self.check_password(old):
+            self.set_password(new)
+            return True
+        return False
+
+    def send_confirmation_email(self):
+        """
+        Sends an email to confirm the email address. In case
+        there's already a confirmed e-mail, an old message
+        is sent to that e-mail to notify the user of the change
+        then sends a new message with the confirmation key to
+        the new e-mail.
+        """
+        context = {'user': self,
+                  'new_email': self.email_unconfirmed,
+                  'protocol': get_protocol(),
+                  'confirmation_key': self.email_confirmation_key,
+                  'site': Site.objects.get_current()}
+
+        subject_old = render_to_string(
+            'emails/confirmation_email_subject_old.txt', context
+            )
+        subject_old = ''.join(subject_old.splitlines())
+
+        message_old = render_to_string(
+            'emails/confirmation_email_message_old.txt', context
+            )
+
+        if self.email:
+            self.email_user(subject_old, message_old, settings.DEFAULT_FROM_EMAIL)
+
+        subject_new = render_to_string(
+            'emails/confirmation_email_subject_new.txt', context
+            )
+        subject_new = ''.join(subject_new.splitlines())
+
+        message_new = render_to_string(
+            'emails/confirmation_email_message_new.txt', context
+            )
+
+        send_mail(
+            subject_new, message_new, settings.DEFAULT_FROM_EMAIL,
+            [self.email_unconfirmed]
+            )
+
+    def change_email(self, email):
+        """
+        Changes the email address for a user. A user needs
+        to verify this new email address before it becomes
+        active.
+        """
+        self.email_unconfirmed = email
+        self.generate_email_confirmation_key()
+        self.save()
+        self.send_confirmation_email()
+
+    def verify_lang(self, lang):
+        user_lang = UserLang.objects.get(user=self, lang=lang)
+        self._verify_lang_obj(user_lang)
+
+    def _verify_lang_obj(self, user_lang):
+        if user_lang.is_trusted:
+            return True
+        if user_lang.with_vote_count >= REQUIRED_LANG_VOTES \
+        and not user_lang.is_trusted:
+            user_lang.is_trusted = True
+            user_lang.save(update_fields=['is_trusted'])
+            return True
+        return False
+
+    def add_lang_vote(self, user, lang, is_with=True):
+        user_lang = UserLang.objects.get(user=user, lang=lang)
+        vote = UserVote.objects.create(
+            user=self, type='lp', is_with=is_with, target_id=user_lang.id
+            )
+        if is_with:
+            user_lang.with_vote_count += 1
+            user_lang.save(update_fields=['with_vote_count'])
+        else:
+            user_lang.against_vote_count += 1
+            user_lang.save(update_fields=['against_vote_count'])
+
+        self._verify_lang_obj(user_lang)
+
+    def verify_status(self, status='t'):
+        return self._verify_status_obj(self, status)
+
+    @classmethod
+    def _verify_status_obj(cls, user, status='t'):
+        return cls.objects._verify_status_obj(user, status)
+
+    def add_status_vote(self, user, status='t', is_with=True):
+        vote = UserVote.objects.create(
+        user=self, type='sp', is_with=is_with, target_id=user.id
+        )
+        if is_with:
+            user.with_status_vote_count += 1
+            user.save(update_fields=['with_status_vote_count'])
+        else:
+            user.against_status_vote_count += 1
+            user.save(update_fields=['against_status_vote_count'])
+
+        self._verify_status_obj(user, status)
+
+    @classmethod
+    def authenticate(cls, username, password):
+        return cls.objects.authenticate(username, password)
+
+    def login(self, request):
+        login(self, request)
+
+# mother of terrible hacks, blame django for not letting me override
+# the damn field
+PytoebaUser._meta.get_field('is_active').default = False
+
+
+class UserLang(models.Model):
+    """
+    Stores languages that users claim they know and has
+    links to the votes other users cast to confirm their
+    claims. Use this through the user manager api and
+    not directly.
+    """
+    user = models.ForeignKey(User, editable=False, related_name='userlang_set')
+    lang = models.CharField(
+        max_length=4, choices=LANGS, blank=False, null=False, db_index=True
+        )
+    proficiency = models.CharField(
+        max_length=1, choices=PROFICIENCY, blank=False, null=False
+        )
+    is_trusted = models.BooleanField(default=False)
+    votes = models.ManyToManyField('UserVote', editable=False)
+    with_vote_count = models.IntegerField(
+        default=0, editable=False, null=False
+        )
+    against_vote_count = models.IntegerField(
+        default=0, editable=False, null=False
+        )
+
+    class Meta:
+        # this multicolumn index should make accessing user/lang pairs
+        # fast enough for ensuring one unique language per user
+        index_together = [
+            ['user', 'lang'],
+        ]
+        # this enforces one unique lang per user on the db level, uses the
+        # above index.
+        unique_together = (
+            ('user', 'lang'),
+        )
+
+    def realign_vote_count(self):
+        self.with_vote_count = UserVote.objects\
+            .filter(id=self.id, is_with=True).count()
+        self.against_vote_count = UserVote.objects\
+            .filter(id=self.id, is_with=False).count()
+        self.save(update_fields=['with_vote_count', 'against_vote_count'])
+
+
+class UserVote(models.Model):
+    """
+    Keeps track of all votes cast by users. The type field
+    stores what the vote is about. The target_id references
+    some object, so it's generic and can be used for Sentences
+    UserLangs or anything else in the future. Use this model
+    through the user manager api.
+    """
+    user = models.ForeignKey(User, editable=False)
+    type = models.CharField(
+        max_length=2, choices=VOTE_ON, blank=False, null=False
+        )
+    is_with = models.BooleanField(default=True)
+    target_id = models.IntegerField()
+
+    class Meta:
+        index_together = [
+            ['user', 'type', 'target_id'],
+        ]
+        # enforces 1 unique vote type per object for each voter
+        unique_together = (
+            ('user', 'type', 'target_id'),
+        )
