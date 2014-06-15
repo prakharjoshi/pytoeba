@@ -16,7 +16,8 @@ from .choices import (
     MARKUPS
     )
 from .managers import (
-    SentenceManager, CorrectionManager, TagManager, PytoebaUserManager
+    SentenceManager, CorrectionManager, TagManager, PytoebaUserManager,
+    MessageManager
     )
 from .utils import (
     get_audio_path, get_user, now, sentence_presave, correction_presave,
@@ -1079,3 +1080,73 @@ class UserVote(models.Model):
         unique_together = (
             ('user', 'type', 'target_id'),
         )
+
+
+class Message(models.Model):
+    """
+    A private message from a user to another.
+    """
+    subject = models.CharField(max_length=120)
+    body = models.TextField()
+    sender = models.ForeignKey(User, related_name='sent_messages')
+    recipient = models.ForeignKey(
+        User, related_name='received_messages', null=True, blank=True
+        )
+    parent_msg = models.ForeignKey(
+        'self', related_name='next_messages', null=True, blank=True
+        )
+    sent_on = models.DateTimeField(null=True, blank=True)
+    read_on = models.DateTimeField(null=True, blank=True)
+    replied_on = models.DateTimeField(null=True, blank=True)
+    sender_deleted_on = models.DateTimeField(
+        db_index=True, null=True, blank=True
+        )
+    recipient_deleted_on = models.DateTimeField(
+        db_index=True, null=True, blank=True
+        )
+
+    objects = MessageManager()
+    
+    class Meta:
+        index_together = [
+            ['recipient', 'recipient_deleted_on'],
+            ['sender', 'sender_deleted_on'],
+        ]
+
+    def __unicode__(self):
+        return self.subject
+
+    def save(self, **kwargs):
+        if not self.id:
+            self.sent_on = now()
+        super(Message, self).save(**kwargs)
+
+    def new(self):
+        """
+        Returns whether the recipient has read the message or not
+        """
+        if not self.read_on:
+            return False
+        return True
+
+    def replied(self):
+        """
+        Returns whether the recipient has written a reply to this message
+        """
+        return bool(self.replied_on)
+
+    def mark_read(self):
+        """
+        Marks a message as read.
+        """
+        if not self.read_on:
+            self.read_on = now()
+            self.save(update_fields=['read_on'])
+
+    def mark_unread(self):
+        """
+        Marks a message as unread.
+        """
+        if self.read_at:
+            self.read_at = None
+            self.save(update_fields=['read_on'])

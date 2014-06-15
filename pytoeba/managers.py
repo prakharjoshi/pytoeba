@@ -643,3 +643,42 @@ class PytoebaUserManager(UserManager):
                 deleted_users.append(user)
                 user.delete()
         return deleted_users
+
+
+class MessageManager(Manager):
+
+    def inbox(self):
+        """
+        Returns all messages that were received by the given user and are not
+        marked as deleted.
+        """
+        user = get_user()
+        return self.filter(
+            recipient=user,
+            recipient_deleted_on__isnull=True,
+        )
+
+    def outbox(self):
+        """
+        Returns all messages that were sent by the given user and are not
+        marked as deleted.
+        """
+        user = get_user()
+        return self.filter(
+            sender=user,
+            sender_deleted_on__isnull=True,
+        )
+
+    def trash(self):
+        """
+        Returns all messages that were either received or sent by the given
+        user and are marked as deleted.
+        """
+        user = get_user()
+        return self.filter(
+            recipient=user,
+            recipient_deleted_on__isnull=False,
+        ) | self.filter(
+            sender=user,
+            sender_deleted_on__isnull=False,
+        )
