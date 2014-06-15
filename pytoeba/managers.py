@@ -682,3 +682,10 @@ class MessageManager(Manager):
             sender=user,
             sender_deleted_on__isnull=False,
         )
+
+
+class CommentManager(Manager):
+
+    def add(self, sentence, text):
+        user = get_user()
+        self.create(sentence=sentence, text=text, added_by=user)

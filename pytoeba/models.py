@@ -17,7 +17,7 @@ from .choices import (
     )
 from .managers import (
     SentenceManager, CorrectionManager, TagManager, PytoebaUserManager,
-    MessageManager
+    MessageManager, CommentManager
     )
 from .utils import (
     get_audio_path, get_user, now, sentence_presave, correction_presave,
@@ -1150,3 +1150,34 @@ class Message(models.Model):
         if self.read_at:
             self.read_at = None
             self.save(update_fields=['read_on'])
+
+
+class Comment(models.Model):
+    sentence = models.ForeignKey(Sentence)
+    text = models.TextField(blank=False, null=False)
+    added_by = models.ForeignKey(User, editable=False)
+    added_on = models.DateTimeField(
+        db_index=True, auto_now_add=True, editable=False
+        )
+    modified_on = models.DateTimeField(
+        db_index=True, auto_now=True, editable=False
+        )
+    is_public = models.BooleanField(db_index=True, default=True)
+    is_deleted = models.BooleanField(db_index=True, default=False)
+
+    objects = CommentManager()
+
+    def __unicode__(self):
+        return '%s: %s...' % (self.added_by, self.text[:50])
+
+    def edit(self, text):
+        self.text = text
+        self.save(update_fields=['text'])
+
+    def delete(self):
+        self.is_deleted = True
+        self.save(update_fields=['is_deleted'])
+
+    def hide(self):
+        self.is_public = False
+        self.save(update_fields=['is_public'])
