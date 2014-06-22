@@ -112,6 +112,13 @@ def markup_to_html(text, markup):
     return text
 
 
+class ClassProperty(property):
+    def __get__(self, cls, owner):
+        return self.fget.__get__(None, owner)()
+
+classproperty = ClassProperty
+
+
 def import_path(path):
     module = '.'.join(path.split('.')[:-1])
     cls = path.split('.')[-1]

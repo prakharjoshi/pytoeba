@@ -21,7 +21,7 @@ from .managers import (
     )
 from .utils import (
     get_audio_path, get_user, now, sentence_presave, correction_presave,
-    tag_presave, uuid, bulk_create, redraw_subgraph, bulk_create
+    tag_presave, uuid4, classproperty, bulk_create, redraw_subgraph, bulk_create
     )
 from .exceptions import NotEditableError
 
@@ -424,6 +424,18 @@ class Sentence(models.Model):
             target_id=sentag.tag_id, target_hash_id=sentag.tag.hash_id
             )
 
+    @classproperty
+    @classmethod
+    def search(cls):
+        """
+        Provides access to haystack's searchqueryset api
+        http://django-haystack.readthedocs.org/en/latest/searchqueryset_api.html
+        Example of usage: Sentence.search.filter(text__contains='something')
+        To enable the backend's query dialect in your search string use
+        autoquery.
+        """
+        return SearchQuerySet().models(cls)
+
 
 class Link(models.Model):
     """
@@ -693,6 +705,18 @@ class Tag(models.Model):
         Adds a localization to an existing tag. Not logged yet.
         """
         LocalizedTag.objects.create(tag=self, text=text, lang=lang)
+
+    @classproperty
+    @classmethod
+    def search(cls):
+        """
+        Provides access to haystack's searchqueryset api
+        http://django-haystack.readthedocs.org/en/latest/searchqueryset_api.html
+        Example of usage: Sentence.search.filter(text__contains='something')
+        To enable the backend's query dialect in your search string use
+        autoquery.
+        """
+        return SearchQuerySet().models(LocalizedTag)
 
 
 class LocalizedTag(models.Model):
@@ -1009,6 +1033,29 @@ class PytoebaUser(AbstractUser):
     def login(self, request):
         login(self, request)
 
+    @classproperty
+    @classmethod
+    def search(cls):
+        """
+        Provides access to haystack's searchqueryset api
+        http://django-haystack.readthedocs.org/en/latest/searchqueryset_api.html
+        Example of usage: Sentence.search.filter(text__contains='something')
+        To enable the backend's query dialect in your search string use
+        autoquery.
+        """
+        return SearchQuerySet().models(cls)
+
+    @property
+    def search_messages(self):
+        """
+        Provides access to haystack's searchqueryset api
+        http://django-haystack.readthedocs.org/en/latest/searchqueryset_api.html
+        This method is only accessible from a user instance.
+        """
+        return SearchQuerySet().models(Message).filter(
+            recipient__exact=self.username
+            )
+
 # mother of terrible hacks, blame django for not letting me override
 # the damn field
 PytoebaUser._meta.get_field('is_active').default = False
@@ -1182,6 +1229,18 @@ class Comment(models.Model):
         self.is_public = False
         self.save(update_fields=['is_public'])
 
+    @classproperty
+    @classmethod
+    def search(cls):
+        """
+        Provides access to haystack's searchqueryset api
+        http://django-haystack.readthedocs.org/en/latest/searchqueryset_api.html
+        Example of usage: Sentence.search.filter(text__contains='something')
+        To enable the backend's query dialect in your search string use
+        autoquery.
+        """
+        return SearchQuerySet().models(cls)
+
 
 class Wall(models.Model):
     category = models.CharField(db_index=True, max_length=100)
@@ -1191,6 +1250,18 @@ class Wall(models.Model):
 
     def get_threads(self):
         return WallThread.objects.filter(wall=self)
+
+    @classproperty
+    @classmethod
+    def search(cls):
+        """
+        Provides access to haystack's searchqueryset api
+        http://django-haystack.readthedocs.org/en/latest/searchqueryset_api.html
+        Example of usage: Sentence.search.filter(text__contains='something')
+        To enable the backend's query dialect in your search string use
+        autoquery.
+        """
+        return SearchQuerySet().models(WallPost)
 
 
 class WallThread(models.Model):
