@@ -1,10 +1,13 @@
 from django.conf.urls import url
+from django.http import HttpResponse
 
 from .utils import work_as
 
 from tastypie.resources import Resource, BaseModelResource, DeclarativeMetaclass, ResourceOptions
 from tastypie.utils import trailing_slash
 from tastypie import http
+from tastypie.api import Api
+from tastypie.utils.mime import determine_format, build_content_type
 
 from types import MethodType
 from collections import defaultdict
@@ -167,3 +170,58 @@ class PyapiResource(BaseModelResource):
             pyapi_schema, pyapi_call = build_pyapi_call(settings)
             setattr(cls, call_name, MethodType(pyapi_call, None, cls))
             setattr(cls, schema_name, MethodType(pyapi_schema, None, cls))
+
+
+class PyapiApi(Api):
+
+    def top_level(self, request, api_name=None):
+        available_resources = {}
+
+        if api_name is None:
+            api_name = self.api_name
+
+        for name, resource in sorted(self._registry.items()):
+            available_resources[name] = {
+                'list_endpoint': self._build_reverse_url('api_dispatch_list',
+                    kwargs={'api_name': api_name, 'resource_name': name,}
+                    ),
+                'schema': self._build_reverse_url("api_get_schema",
+                    kwargs={'api_name': api_name, 'resource_name': name,}
+                    ),
+            }
+
+            pyapi_funcs = getattr(resource._meta, 'pyapi_funcs', None)
+
+            if pyapi_funcs:
+                pyapi_endpoints = []
+                for pyapi_func, settings in pyapi_funcs['funcs'].items():
+                    pyapi_url = self._build_reverse_url(name+'_'+pyapi_func,
+                        kwargs={'api_name': api_name, 'resource_name': name,}
+                        )
+                    pyapi_schema_url = self._build_reverse_url(name+'_'+pyapi_func+'_schema',
+                        kwargs={'api_name': api_name, 'resource_name': name,}
+                        )
+
+                    endpoint = {}
+                    endpoint['endpoint'] = pyapi_url
+                    endpoint['schema'] = pyapi_schema_url
+
+                    pyapi_endpoints.append(endpoint)
+
+                available_resources[name]['pyapi_endpoints'] = pyapi_endpoints
+
+
+        desired_format = determine_format(request, self.serializer)
+
+        options = {}
+
+        if 'text/javascript' in desired_format:
+            callback = request.GET.get('callback', 'callback')
+
+            if not is_valid_jsonp_callback_value(callback):
+                raise BadRequest('JSONP callback name is invalid.')
+
+            options['callback'] = callback
+
+        serialized = self.serializer.serialize(available_resources, desired_format, options)
+        return HttpResponse(content=serialized, content_type=build_content_type(desired_format))
