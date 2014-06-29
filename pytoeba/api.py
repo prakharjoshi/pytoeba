@@ -2,12 +2,14 @@ from django.conf.urls import url
 from django.http import HttpResponse
 
 from .utils import work_as
+from .models import Sentence, Log, Correction, Tag, SentenceTag, PytoebaUser, Comment, Message
 
 from tastypie.resources import Resource, BaseModelResource, DeclarativeMetaclass, ResourceOptions
 from tastypie.utils import trailing_slash
 from tastypie import http
 from tastypie.api import Api
 from tastypie.utils.mime import determine_format, build_content_type
+from tastypie import fields
 
 from types import MethodType
 from collections import defaultdict
@@ -225,3 +227,170 @@ class PyapiApi(Api):
 
         serialized = self.serializer.serialize(available_resources, desired_format, options)
         return HttpResponse(content=serialized, content_type=build_content_type(desired_format))
+
+
+FILTERS = ['exact', 'in']
+FILTERS_NUM = FILTERS + ['lt', 'lte', 'gt', 'gte', 'range']
+FILTERS_DATE = FILTERS_NUM + ['year', 'month', 'day', 'hour', 'minute']
+
+class SentenceResource(PyapiResource):
+    added_by = fields.ForeignKey('pytoeba.api.UserResource', attribute='added_by')
+    owner = fields.ForeignKey('pytoeba.api.UserResource', attribute='added_by')
+
+    class Meta:
+        queryset = Sentence.objects.all()
+        resource_name = 'sentence'
+        allowed_methods = ['get']
+        authentication = BasicAuthentication()
+        authorization = Authorization()
+        detail_uri_name = 'hash_id'
+        filtering = {
+            'id': FILTERS_NUM,
+            'sent_id': FILTERS_NUM,
+            'hash_id': FILTERS,
+            'added_on': FILTERS_DATE,
+            'modified_on': FILTERS_DATE,
+            'length': FILTERS_NUM,
+            'lang': FILTERS,
+            'text': FILTERS,
+            'is_editable': FILTERS,
+            'is_active': FILTERS,
+            'is_deleted': FILTERS,
+            'has_correction': FILTERS
+        }
+        pyapi_funcs = {
+            'include': [
+                'add', 'bulk_add', 'edit', 'delete', 'bulk_delete', 'lock',
+                'unlock', 'adopt', 'release', 'link', 'unlink', 'translate',
+                'correct', 'accept_correction', 'reject_correction', 'add_tag',
+                'delete_tag'
+                ],
+            'funcs': {
+                'bulk_add': {
+                    'resource_type': 'list'
+                },
+                'bulk_delete': {
+                    'resource_type': 'list'
+                }
+            }
+        }
+
+
+class LogResource(PyapiResource):
+    sentence = fields.ForeignKey(SentenceResource, attribute='sentence')
+    added_by = fields.ForeignKey('pytoeba.api.UserResource', attribute='added_by')
+
+    class Meta:
+        resource_name = 'log'
+        queryset = Log.objects.all()
+        allowed_methods = ['get']
+        filtering = {
+            'source_hash_id': FILTERS,
+            'target_hash_id': FILTERS,
+            'source_lang': FILTERS,
+            'target_land': FILTERS,
+            'type': FILTERS,
+            'done_on': FILTERS_DATE
+        }
+        pyapi_funcs = {}
+
+
+class CorrectionResource(PyapiResource):
+    sentence = fields.ForeignKey(SentenceResource, attribute='sentence')
+    added_by = fields.ForeignKey('pytoeba.api.UserResource', attribute='added_by')
+
+    class Meta:
+        resource_name = 'correction'
+        queryset = Correction.objects.all()
+        allowed_methods = ['get']
+        detail_uri_name = 'hash_id'
+        filtering = {
+            'hash_id': FILTERS_NUM,
+            'added_on': FILTERS_DATE,
+            'modified_on': FILTERS_DATE
+        }
+        pyapi_funcs = {
+            'include': ['add', 'edit', 'delete', 'reject', 'force']
+        }
+
+
+class TagResource(PyapiResource):
+    added_by = fields.ForeignKey('pytoeba.api.UserResource', attribute='added_by')
+
+    class Meta:
+        resource_name = 'tag'
+        queryset = Tag.objects.all()
+        allowed_methods = ['get']
+        detail_uri_name = 'hash_id'
+        filtering = {
+            'hash_id': FILTERS_NUM,
+            'added_on': FILTERS_DATE,
+        }
+        pyapi_funcs = {
+            'include': [
+                'get_localization', 'get_all_localizations', 'merge', 'translate',
+                'add_new'
+                ]
+        }
+
+
+class SentenceTagResource(PyapiResource):
+    sentence = fields.ForeignKey(SentenceResource, attribute='sentence')
+    tag = fields.ForeignKey(TagResource, attribute='tag')
+    added_by = fields.ForeignKey('pytoeba.api.UserResource', attribute='added_by')
+
+    class Meta:
+        resource_name = 'sentence_tag'
+        queryset = SentenceTag.objects.all()
+        allowed_methods = ['get']
+        filtering = {
+            'added_on': FILTERS_DATE
+        }
+        pyapi_funcs = {}
+
+
+class UserResource(PyapiResource):
+    class Meta:
+        resource_name = 'user'
+        queryset = PytoebaUser.objects.all()
+        allowed_methods = ['get']
+        include = [
+            'id', 'username', 'last_login', 'country', 'birthday', 'status',
+            'about_text'
+            ]
+        filtering = {
+            'id': FILTERS_NUM,
+            'username': FILTERS,
+            'last_login': FILTERS_DATE,
+            'status': FILTERS
+        }
+        pyapi_funcs = {}
+
+
+class MessageResource(PyapiResource):
+    sender = fields.ForeignKey('pytoeba.api.UserResource', attribute='added_by')
+    recipient = fields.ForeignKey('pytoeba.api.UserResource', attribute='added_by')
+
+    class Meta:
+        resource_name = 'message'
+        queryset = Message.objects.all()
+        allowed_methods = ['get']
+        pyapi_funcs = {
+            # probably needs a smarter solution that includes pagination
+            # and more model based filtering
+            'include': ['inbox', 'outbox', 'trash'],
+            'funcs': {
+                'inbox': {
+                    'allowed_methods': ['get']
+                },
+                'outbox': {
+                    'allowed_methods': ['get']
+                },
+                'trash': {
+                    'allowed_methods': ['get']
+                },
+            }
+        }
+
+    def apply_authorization_limits(self, request, object_list):
+        return object_list.filter(recipient=request.user)
