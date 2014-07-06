@@ -3,9 +3,12 @@ from django.http import HttpResponse
 
 from .utils import work_as, stemmer
 from .models import Sentence, Log, Correction, Tag, SentenceTag, PytoebaUser, Comment, Message
+from .search_indexes import SentenceIndex,TagIndex, CommentIndex, WallIndex, UserIndex, MessageIndex
 
 from tastypie.resources import Resource, BaseModelResource, DeclarativeMetaclass, ResourceOptions
 from tastypie.utils import trailing_slash
+from tastypie.authorization import Authorization
+from tastypie.authentication import BasicAuthentication
 from tastypie import http
 from tastypie.api import Api
 from tastypie.utils.mime import determine_format, build_content_type
@@ -643,3 +646,109 @@ class BaseSearchResource(Resource):
                 return sqs[0]
             else:
                 return sqs
+
+
+SEARCH_FILTERS = [
+        'contains', 'range', 'in', 'exact', 'startswith',
+        'gt', 'gte', 'lt', 'lte'
+        ]
+
+class SentenceSearchResource(BaseSearchResource):
+    class Meta:
+        resource_name = 'sentence_search'
+        index = SentenceIndex()
+        autoquery_fields = ['sentence_text', 'sentence_text_stemmed']
+        stem_fields = ['sentence_text_stemmed']
+        allowed_methods = ['get']
+
+filtering = {'django_id': SEARCH_FILTERS}
+
+for f in SentenceSearchResource._meta.index.fields.keys():
+    if f == 'text': continue
+    filtering.update({f: SEARCH_FILTERS})
+
+SentenceSearchResource._meta.filtering = filtering
+
+
+class TagSearchResource(BaseSearchResource):
+    class Meta:
+        resource_name = 'tag_search'
+        index = TagIndex()
+        autoquery_fields = ['tag_text']
+        allowed_methods = ['get']
+
+filtering = {'django_id': SEARCH_FILTERS}
+
+for f in TagSearchResource._meta.index.fields.keys():
+    if f == 'text': continue
+    filtering.update({f: SEARCH_FILTERS})
+
+TagSearchResource._meta.filtering = filtering
+
+
+class CommentSearchResource(BaseSearchResource):
+    class Meta:
+        resource_name = 'comment_search'
+        index = CommentIndex()
+        autoquery_fields = ['comment_text']
+        allowed_methods = ['get']
+
+filtering = {'django_id': SEARCH_FILTERS}
+
+for f in CommentSearchResource._meta.index.fields.keys():
+    if f == 'text': continue
+    filtering.update({f: SEARCH_FILTERS})
+
+CommentSearchResource._meta.filtering = filtering
+
+
+class WallSearchResource(BaseSearchResource):
+    class Meta:
+        resource_name = 'wall_search'
+        index = WallIndex()
+        autoquery_fields = ['thread_subject', 'post_subject', 'post_text', 'wall_category']
+        allowed_methods = ['get']
+
+filtering = {'django_id': SEARCH_FILTERS}
+
+for f in WallSearchResource._meta.index.fields.keys():
+    if f == 'text': continue
+    filtering.update({f: SEARCH_FILTERS})
+
+WallSearchResource._meta.filtering = filtering
+
+
+class UserSearchResource(BaseSearchResource):
+    class Meta:
+        resource_name = 'user_search'
+        index = UserIndex()
+        autoquery_fields = ['username']
+        allowed_methods = ['get']
+
+filtering = {'django_id': SEARCH_FILTERS}
+
+for f in UserSearchResource._meta.index.fields.keys():
+    if f == 'text': continue
+    filtering.update({f: SEARCH_FILTERS})
+
+UserSearchResource._meta.filtering = filtering
+
+
+class MessageSearchResource(BaseSearchResource):
+    class Meta:
+        resource_name = 'message_search'
+        index = MessageIndex()
+        autoquery_fields = ['subject', 'body']
+        allowed_methods = ['get']
+
+    def apply_authorization_limits(self, request, object_list):
+        return object_list.filter(recipient=request.user.username)
+
+filtering = {'django_id': SEARCH_FILTERS}
+
+for f in MessageSearchResource._meta.index.fields.keys():
+    if f == 'text': continue
+    if f == 'recipient': continue
+    filtering.update({f: SEARCH_FILTERS})
+
+MessageSearchResource._meta.filtering = filtering
