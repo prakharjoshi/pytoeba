@@ -2,7 +2,7 @@ from haystack import indexes
 from pytoeba.models import (
     Sentence, LocalizedTag, Comment, WallPost, PytoebaUser, Message
     )
-from .utils import now
+from .utils import now, stemmer
 
 
 class SentenceIndex(indexes.SearchIndex, indexes.Indexable):
@@ -28,6 +28,7 @@ class SentenceIndex(indexes.SearchIndex, indexes.Indexable):
 
         self.prepared_data['added_by'] = object.added_by.username
         self.prepared_data['owner'] = object.owner.username
+        self.prepared_data['sentence_text_stemmed'] = stemmer.stem(object.text, object.lang)
 
         return self.prepared_data
 
