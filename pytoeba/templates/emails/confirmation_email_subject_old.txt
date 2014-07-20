@@ -1,0 +1,5 @@
+{% load i18n %}
+
+{% blocktrans %}
+[{{ site.name }}] Request to change your email address
+{% endblocktrans %}

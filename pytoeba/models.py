@@ -4,12 +4,42 @@ so be extra careful with the ORM.
 """
 
 from django.db import models
-from django.contrib.auth.models import User
-from .choices import LANGS, LOG_ACTIONS
-from .managers import SentenceManager, CorrectionManager, TagManager
-from .utils import get_audio_path, get_user, sha1, truncated_sim_hash, now
+from django.conf import settings
+from django.contrib.auth.models import AbstractUser
+from django.contrib.auth import login
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+from django.utils.html import escape
+
+from social.storage.django_orm import (
+    DjangoUserMixin, DjangoAssociationMixin, DjangoNonceMixin, DjangoCodeMixin,
+    BaseDjangoStorage
+    )
+from social.utils import partial_pipeline_data
+from social.backends.utils import get_backend
+from .fields import JSONField
+from .utils import get_callback_url
+
+from .choices import (
+    LANGS, LOG_ACTIONS, PRIVACY, COUNTRIES, PROFICIENCY, VOTE_ON, USER_STATUS,
+    MARKUPS
+    )
+from .managers import (
+    SentenceManager, CorrectionManager, TagManager, PytoebaUserManager,
+    MessageManager, CommentManager
+    )
+from .utils import (
+    get_audio_path, get_user, now, get_protocol,
+    salted_sha1, SHA1_RE, markup_to_html, classproperty, sentence_presave,
+    correction_presave, tag_presave, bulk_create, redraw_subgraph, get_strategy
+    )
 from .exceptions import NotEditableError
 
+from haystack.query import SearchQuerySet
+from datetime import timedelta
+
+
+User = settings.AUTH_USER_MODEL
 
 class Sentence(models.Model):
     """
@@ -18,13 +48,15 @@ class Sentence(models.Model):
     model directly for CRUD operations without going through the custom
     manager can be disastrous.
     """
+    # for backwards compatibility with the current tatoeba
+    # will be removed in the future
     sent_id = models.IntegerField(db_index=True, blank=True, null=True)
-    # this is a unique identifier, sha1(user + text + lang)
+    # this is a unique identifier, uuid4()
     hash_id = models.CharField(
-        db_index=True, max_length=40, blank=False, null=False, unique=True
+        db_index=True, max_length=32, blank=False, null=False, unique=True
         )
     lang = models.CharField(
-        max_length=4, blank=False, null=False, choices=LANGS
+        db_index=True, max_length=4, blank=False, null=False, choices=LANGS
         )
     text = models.CharField(max_length=500, blank=False, null=False)
     sim_hash = models.BigIntegerField(
@@ -34,19 +66,25 @@ class Sentence(models.Model):
         User, editable=False, related_name='sent_addedby_set', blank=False,
         null=False
         )
-    added_on = models.DateTimeField(auto_now_add=True, editable=False)
-    modified_on = models.DateTimeField(auto_now=True, editable=False)
+    added_on = models.DateTimeField(
+        db_index=True, auto_now_add=True, editable=False
+        )
+    modified_on = models.DateTimeField(
+        db_index=True, auto_now=True, editable=False
+        )
     owner = models.ForeignKey(
         User, editable=False, related_name='sent_owner_set', null=True,
         default=None
         )
     links = models.ManyToManyField('self', through='Link', symmetrical=False)
-    is_editable = models.BooleanField(default=True)
-    has_correction = models.BooleanField(default=False)
-    is_active = models.BooleanField(default=False)
-    is_deleted = models.BooleanField(default=False)
+    is_editable = models.BooleanField(db_index=True, default=True)
+    has_correction = models.BooleanField(db_index=True, default=False)
+    is_active = models.BooleanField(db_index=True, default=False)
+    is_deleted = models.BooleanField(db_index=True, default=False)
     # this field is for fast filtering based on sentence word length
-    length = models.IntegerField(editable=False, blank=False, null=False)
+    length = models.IntegerField(
+        db_index=True, editable=False, blank=False, null=False
+        )
 
     objects = SentenceManager()
 
@@ -70,17 +108,13 @@ class Sentence(models.Model):
         Overrides django's default save() to autopopulate
         hash fields when text is added or is updated.
         """
-        if self.text and self.lang and self.added_by:
-            self.hash_id = sha1(self.text + self.lang + self.added_by.username)
-        if self.text:
-            self.length = len(self.text)
-            self.sim_hash = truncated_sim_hash(self.text)
-        if not self.id:
-            self.owner = self.added_by
+        self = sentence_presave(self)
+
         if kwargs.has_key('update_fields'):
             kwargs['update_fields'] += ['modified_on']
             if 'text' in kwargs['update_fields']:
-                kwargs['update_fields'] += ['hash_id', 'length', 'sim_hash']
+                kwargs['update_fields'] += ['length', 'sim_hash']
+
         super(Sentence, self).save(*args, **kwargs)
 
     @classmethod
@@ -102,7 +136,7 @@ class Sentence(models.Model):
         self.save(update_fields=['text'])
         Log.objects.create(
             sentence=self, type='sed', done_by=user, change_set=text,
-            target_id=self.hash_id
+            source_hash_id=self.hash_id, source_lang=self.lang
             )
 
     def delete(self):
@@ -113,7 +147,10 @@ class Sentence(models.Model):
         user = get_user()
         self.is_deleted = True
         self.save(update_fields=['is_deleted'])
-        Log.objects.create(sentence=self, type='srd', done_by=user)
+        Log.objects.create(
+            sentence=self, type='srd', done_by=user, source_hash_id=self.hash_id,
+            source_lang=self.lang
+            )
 
     def lock(self):
         """
@@ -123,7 +160,10 @@ class Sentence(models.Model):
         user = get_user()
         self.is_editable = False
         self.save(update_fields=['is_editable'])
-        Log.objects.create(sentence=self, type='sld', done_by=user)
+        Log.objects.create(
+            sentence=self, type='sld', done_by=user, source_hash_id=self.hash_id,
+            source_lang=self.lang
+            )
 
     def unlock(self):
         """
@@ -133,7 +173,10 @@ class Sentence(models.Model):
         user = get_user()
         self.is_editable = True
         self.save(update_fields=['is_editable'])
-        Log.objects.create(sentence=self, type='sul', done_by=user)
+        Log.objects.create(
+            sentence=self, type='sul', done_by=user, source_hash_id=self.hash_id,
+            source_lang=self.lang
+            )
 
     def adopt(self):
         """
@@ -144,17 +187,10 @@ class Sentence(models.Model):
         user = get_user()
         self.owner = user
         self.save(update_fields=['owner'])
-        Log.objects.create(sentence=self, type='soa', done_by=user)
-
-    def change_language(self, lang):
-        """
-        Changes the language on the current sentence
-        by updating the lang field and adds a log entry.
-        """
-        user = get_user()
-        self.lang = lang
-        self.save(update_fields=['lang'])
-        Log.objects.create(sentence=self, type='slc', done_by=user)
+        Log.objects.create(
+            sentence=self, type='soa', done_by=user, source_hash_id=self.hash_id,
+            source_lang=self.lang
+            )
 
     def release(self):
         """
@@ -165,7 +201,88 @@ class Sentence(models.Model):
         user = get_user()
         self.owner = None
         self.save(update_fields=['owner'])
-        Log.objects.create(sentence=self, type='sor', done_by=user)
+        Log.objects.create(
+            sentence=self, type='sor', done_by=user, source_hash_id=self.hash_id,
+            source_lang=self.lang
+            )
+
+    def change_language(self, lang):
+        """
+        Changes the language on the current sentence
+        by updating the lang field and adds a log entry.
+        """
+        user = get_user()
+        old_lang = self.lang
+        self.lang = lang
+        self.save(update_fields=['lang'])
+        Log.objects.create(
+            sentence=self, type='slc', done_by=user, source_hash_id=self.hash_id,
+            source_lang=old_lang, target_lang=self.lang
+            )
+
+    @classmethod
+    def _tuplize_links_unlinks(cls, source, target, user, _type='link'):
+        link_tuples = []
+        logs = []
+        if _type == 'link':
+            _type = 'lad'
+        elif _type == 'unlink':
+            _type = 'lrd'
+        else:
+            raise Exception("Operation not supported")
+
+        for sent1 in source:
+            for sent2 in target:
+                link_tuples.append((sent1.id, sent2.id))
+                link_tuples.append((sent2.id, sent1.id))
+                logs.append(
+                    Log(
+                        sentence=sent1, type=_type, done_by=user,
+                        source_hash_id=sent1.hash_id, source_lang=sent1.lang,
+                        target_id=sent2.id, target_hash_id=sent2.hash_id,
+                        target_lang=sent2.lang
+                        )
+                    )
+                logs.append(
+                    Log(
+                        sentence=sent2, type=_type, done_by=user,
+                        source_hash_id=sent2.hash_id, source_lang=sent2.lang,
+                        target_id=sent1.id, target_hash_id=sent1.hash_id,
+                        target_lang=sent1.lang
+                        )
+                    )
+
+        return link_tuples, logs
+
+    @classmethod
+    def _link_or_unlink(
+        cls, user, source_links=[], target_links=[], source_unlinks=[],
+        target_unlinks=[]
+            ):
+        """
+        Simple wrapper around pytoeba.utils.redraw_subgraph.
+        Turns links into tuples and adds log entries.
+        """
+
+        links = []
+        unlinks = []
+        logs = []
+
+        if source_links:
+            links, link_logs = cls._tuplize_links_unlinks(
+                                    source_links, target_links, user
+                                    )
+
+        if source_unlinks:
+            unlinks, unlink_logs = cls._tuplize_links_unlinks(
+                                        source_unlinks, target_unlinks, user,
+                                        _type='unlink'
+                                        )
+
+        redraw_subgraph(links=links, unlinks=unlinks)
+        logs.extend(link_logs)
+        logs.extend(unlink_logs)
+        bulk_create(logs)
 
     def link(self, sent):
         """
@@ -174,18 +291,15 @@ class Sentence(models.Model):
         recalculate the graph if needed.
         """
         user = get_user()
-        Link.objects.create(side1=self, side2=sent, level=1)
-        Link.objects.create(side1=sent, side2=self, level=1)
-        Log.objects.create(
-            sentence=self, type='lad', done_by=user, target_id=sent.hash_id
-            )
-        Log.objects.create(
-            sentence=sent, type='lad', done_by=user, target_id=self.hash_id
-            )
+        self._link_or_unlink(user, source_links=[self], target_links=[sent])
 
     def bulk_link(self, sents):
-        for sent in sents:
-            self.link(sent)
+        """
+        Bulk links the sentence instance to a sentence queryset
+        """
+        user = get_user()
+        self._link_or_unlink(user, source_links=[self], target_links=sents)
+
 
     def unlink(self, sent):
         """
@@ -193,20 +307,11 @@ class Sentence(models.Model):
         adds 2 log entries.
         """
         user = get_user()
-        link = Link.objects.get(side1=self, side2=sent, level=1)
-        link.delete()
-        link = Link.objects.get(side1=sent, side2=self, level=1)
-        link.delete()
-        Log.objects.create(
-            sentence=self, type='lrd', done_by=user, target_id=sent.hash_id
-            )
-        Log.objects.create(
-            sentence=sent, type='lrd', done_by=user, target_id=self.hash_id
-            )
+        self._link_or_unlink(user, source_unlinks=[self], target_unlinks=[sent])
 
     def bulk_unlink(self, sents):
-        for sent in sents:
-            self.unlink(sent)
+        user = get_user()
+        self._link_or_unlink(user, source_unlinks=[self], target_unlinks=sents)
 
     def translate(self, text, lang='auto'):
         """
@@ -243,7 +348,8 @@ class Sentence(models.Model):
         self.save(update_fields=['text'])
         Log.objects.create(
             sentence=self, type='cac', done_by=user, change_set=self.text,
-            target_id=corr.hash_id
+            source_hash_id=self.hash_id, source_lang=self.lang,
+            target_id=corr.id, target_hash_id=corr.hash_id
             )
         corr._base_delete()
         Correction.objects.filter(sentence=self).reject()
@@ -273,7 +379,8 @@ class Sentence(models.Model):
         self.save(update_fields=['text'])
         Log.objects.create(
             sentence=self, type='cfd', done_by=user, change_set=corr.text,
-            target_id=corr.hash_id
+            source_hash_id=self.hash_id, source_lang=self.lang,
+            target_id=corr.id, target_hash_id=corr.hash_id
             )
         corr._base_delete()
         Correction.objects.filter(sentence=self).reject()
@@ -315,7 +422,9 @@ class Sentence(models.Model):
             sentence=self, tag=tag, added_by=user
             )
         Log.objects.create(
-            sentence=self, type='tad', done_by=user, target_id=tag.hash_id
+            sentence=self, type='tad', done_by=user,
+            source_hash_id=self.hash_id, source_lang=self.lang,
+            target_id=sentag.tag.id, target_hash_id=sentag.tag.hash_id
             )
 
     def delete_tag(self, text):
@@ -324,14 +433,27 @@ class Sentence(models.Model):
         the SentenceTag object storing this info. The actual
         Tag object is not affected.
         """
-        loctag = LocalizedTag.objects.get(text=text)
         user = get_user()
-        sentag = SentenceTag.objects.get(sentence=self, tag=loctag.tag)
+        loctag = LocalizedTag.objects.get(text=text)
+        sentag = SentenceTag.objects.get(sentence=self, tag_id=loctag.tag_id)
         sentag.delete()
         Log.objects.create(
             sentence=self, type='trd', done_by=user,
-            target_id=loctag.tag.hash_id
+            source_hash_id=self.hash_id, source_lang=self.lang,
+            target_id=sentag.tag_id, target_hash_id=sentag.tag.hash_id
             )
+
+    @classproperty
+    @classmethod
+    def search(cls):
+        """
+        Provides access to haystack's searchqueryset api
+        http://django-haystack.readthedocs.org/en/latest/searchqueryset_api.html
+        Example of usage: Sentence.search.filter(text__contains='something')
+        To enable the backend's query dialect in your search string use
+        autoquery.
+        """
+        return SearchQuerySet().models(cls)
 
 
 class Link(models.Model):
@@ -344,7 +466,21 @@ class Link(models.Model):
     """
     side1 = models.ForeignKey(Sentence, related_name='side1_set')
     side2 = models.ForeignKey(Sentence, related_name='side2_set')
-    level = models.IntegerField(editable=False, blank=False, null=False)
+    level = models.IntegerField(
+        db_index=True, editable=False, blank=False, null=False
+        )
+
+    class Meta:
+        index_together = [
+            ['side1', 'side2'],
+            ['side1', 'level'],
+            ['side2', 'level'],
+            ['side1', 'side2', 'level'],
+        ]
+
+        unique_together = (
+            ('side1', 'side2'),
+        )
 
     def __unicode__(self):
         return '[%s] -(%s)-> [%s]' % (
@@ -363,7 +499,7 @@ class Log(models.Model):
     """
     sentence = models.ForeignKey(Sentence)
     type = models.CharField(
-        max_length=3, editable=False, blank=False, null=False,
+        db_index=True, max_length=3, editable=False, blank=False, null=False,
         choices=LOG_ACTIONS
         )
     done_by = models.ForeignKey(
@@ -375,21 +511,43 @@ class Log(models.Model):
     # of relevant information. For sentence/comment/corrections-
     # related changes, the text is stored. Reference to the
     # exact sentence/comment/correction edited is stored as
-    # a hash_id in the target_id field. For tags the tag name
+    # a hash_id in the source_hash_id field. For tags the tag name
     # is stored. For links, nothing is stored in change_set
     # and the hash_id of the target sentence is stored in hash_id.
     # The level that is logged is always /only/ the direct link.
     # Otherwise for operations with no versioning required like
     # sentence adoption this field defaults to NULL.
     change_set = models.CharField(max_length=500, null=True, default=None)
-    target_id = models.CharField(
-        db_index=True, max_length=40, editable=False, blank=True, null=True,
+    # there should probably be a source_id here too that points to sentence_id
+    # but making this work in django requires some ugly hack, so
+    # settling for an ugly property i guess for now, no queryset support
+    target_id = models.IntegerField(db_index=True, blank=True, null=True)
+    source_hash_id = models.CharField(
+        db_index=True, max_length=32, editable=False, blank=True, null=True,
         )
+    target_hash_id = models.CharField(
+        db_index=True, max_length=32, editable=False, blank=True, null=True,
+        )
+    source_lang = models.CharField(
+        db_index=True, max_length=4, blank=True, null=True, choices=LANGS
+        )
+    target_lang = models.CharField(
+        db_index=True, max_length=4, blank=True, null=True, choices=LANGS
+        )
+
+    class Meta:
+        index_together = [
+            ['source_lang', 'target_lang'],
+        ]
 
     def __unicode__(self):
         return '%s on %s by %s change: %s' % (
             self.type, self.sentence, self.done_by, self.change_set
             )
+
+    @property
+    def source_id(self):
+        return self.sentence_id
 
 
 class Correction(models.Model):
@@ -403,13 +561,17 @@ class Correction(models.Model):
     As usual operations are abstracted on the manager and should go through it.
     """
     hash_id = models.CharField(
-        db_index=True, max_length=40, blank=False, null=False, unique=True
+        db_index=True, max_length=32, blank=False, null=False, unique=True
         )
     sentence = models.ForeignKey(Sentence)
     text = models.CharField(max_length=500, blank=False, null=False)
     added_by = models.ForeignKey(User, editable=False)
-    added_on = models.DateTimeField(auto_now_add=True, editable=False)
-    modified_on = models.DateTimeField(auto_now=True, editable=False)
+    added_on = models.DateTimeField(
+        db_index=True, auto_now_add=True, editable=False
+        )
+    modified_on = models.DateTimeField(
+        db_index=True, auto_now=True, editable=False
+        )
     reason = models.CharField(max_length=200, blank=True)
 
     objects = CorrectionManager()
@@ -424,16 +586,11 @@ class Correction(models.Model):
         If the object is saved for the first time
         has_correction is handled on the sentence.
         """
-        if self.text:
-            self.hash_id = sha1(self.text + now())
-        if not self.id and self.sentence:
-            sent = self.sentence
-            sent.has_correction = True
-            sent.save(update_fields=['has_correction'])
+        self = correction_presave(self)
+
         if kwargs.has_key('update_fields'):
             kwargs['update_fields'] += ['modified_on']
-            if 'text' in kwargs['update_fields']:
-                kwargs['update_fields'] += ['hash_id']
+
         super(Correction, self).save(*args, **kwargs)
 
     def edit(self, text):
@@ -444,9 +601,11 @@ class Correction(models.Model):
         user = get_user()
         self.text = text
         self.save(update_fields=['text'])
+        sent = self.sentence
         Log.objects.create(
-            sentence=self.sentence, type='ced', done_by=user, change_set=text,
-            target_id=self.hash_id
+            sentence=sent, type='ced', done_by=user, change_set=text,
+            source_hash_id=sent.hash_id, source_lang=sent.lang,
+            target_id=self.id, target_hash_id=self.hash_id
             )
 
     def _base_delete(self):
@@ -468,7 +627,8 @@ class Correction(models.Model):
         sent = self.sentence
         Log.objects.create(
             sentence=sent, type='crd', done_by=user,
-            target_id=self.hash_id
+            source_hash_id=sent.hash_id, source_lang=sent.lang,
+            target_id=self.id, target_hash_id=self.hash_id
             )
         sent_corrs = self._get_corrections_by_sent(sent)
         if not sent_corrs:
@@ -482,9 +642,11 @@ class Correction(models.Model):
         """
         user = get_user()
         self._base_delete()
+        sent = self.sentence
         Log.objects.create(
-            sentence=self.sentence, type='crj', done_by=user,
-            target_id=self.hash_id
+            sentence=sent, type='crj', done_by=user,
+            source_hash_id=sent.hash_id, source_lang=sent.lang,
+            target_id=self.id, target_hash_id=self.hash_id
             )
 
     def accept(self):
@@ -517,10 +679,12 @@ class Tag(models.Model):
     node to another and removing one of them.
     """
     hash_id = models.CharField(
-        db_index=True, max_length=40, blank=False, null=False, unique=True
+        db_index=True, max_length=32, blank=False, null=False, unique=True
         )
     added_by = models.ForeignKey(User, editable=False)
-    added_on = models.DateTimeField(auto_now_add=True, editable=False)
+    added_on = models.DateTimeField(
+        db_index=True, auto_now_add=True, editable=False
+        )
 
     objects = TagManager()
 
@@ -531,9 +695,8 @@ class Tag(models.Model):
         """
         Autopopulates the hash_id.
         """
-        username = self.added_by.username
-        if username:
-            self.hash_id = sha1(username + now())
+        self = tag_presave(self)
+
         super(Tag, self).save()
 
     def get_localization(self, lang):
@@ -566,6 +729,18 @@ class Tag(models.Model):
         """
         LocalizedTag.objects.create(tag=self, text=text, lang=lang)
 
+    @classproperty
+    @classmethod
+    def search(cls):
+        """
+        Provides access to haystack's searchqueryset api
+        http://django-haystack.readthedocs.org/en/latest/searchqueryset_api.html
+        Example of usage: Sentence.search.filter(text__contains='something')
+        To enable the backend's query dialect in your search string use
+        autoquery.
+        """
+        return SearchQuerySet().models(LocalizedTag)
+
 
 class LocalizedTag(models.Model):
     """
@@ -581,8 +756,6 @@ class LocalizedTag(models.Model):
         )
 
     class Meta:
-        # this multicolumn index should make accessing sentences/lang pairs
-        # fast enough for ensuring one localization per tag
         index_together = [
             ['tag', 'lang'],
         ]
@@ -605,6 +778,16 @@ class SentenceTag(models.Model):
     added_by = models.ForeignKey(User, editable=False)
     added_on = models.DateTimeField(auto_now_add=True, editable=False)
 
+    class Meta:
+        index_together = [
+            ['sentence', 'tag'],
+        ]
+        # this enforces one unique tag per sentence on the db level, uses the
+        # above index.
+        unique_together = (
+            ('sentence', 'tag'),
+        )
+
     def __unicode__(self):
         return '<%s> %s' % (self.tag, self.sentence.text)
 
@@ -619,7 +802,7 @@ class Audio(models.Model):
     and from the user's profile info.
     """
     hash_id = models.CharField(
-        db_index=True, max_length=40, blank=False, null=False, unique=True
+        db_index=True, max_length=32, blank=False, null=False, unique=True
         )
     sentence = models.ForeignKey(Sentence)
     audio_file = models.FileField(upload_to=get_audio_path, null=False, blank=False)
@@ -628,3 +811,756 @@ class Audio(models.Model):
 
     def __unicode__(self):
         return '[%s] %s' % (self.audio_file, self.sentence)
+
+
+class PytoebaUser(AbstractUser):
+    """
+    Centralizes all info relating to users and their profile
+    info. Inherits from the auth model's AbstractUser class
+    and therefore behaves the way django's User model would
+    and is fully compatible with django.contrib.auth system.
+    """
+    email_unconfirmed = models.EmailField(blank=True, default='test@test.com')
+    email_confirmation_key = models.CharField(max_length=40, blank=True)
+    email_confirmation_key_created_on = models.DateTimeField(
+        blank=True, null=True
+        )
+    privacy = models.CharField(
+        max_length=1, choices=PRIVACY, default='o', blank=False,
+        null=False
+        )
+    country = models.CharField(
+        max_length=2, choices=COUNTRIES, blank=True, null=True
+        )
+    birthday = models.DateTimeField(blank=True, null=True)
+    # This is strictly for filtering, permissions are handled
+    # exclusively through links to django.contrib.auth.Group
+    status = models.CharField(
+        db_index=True, max_length=1, choices=USER_STATUS, default='u',
+        editable=False, null=False
+        )
+    with_status_vote_count = models.IntegerField(default=0)
+    against_status_vote_count = models.IntegerField(default=0)
+    about_text = models.TextField()
+    about_markup = models.CharField(max_length=2, choices=MARKUPS, default='')
+    about_html = models.TextField()
+
+    objects = PytoebaUserManager()
+
+    def __unicode__(self):
+        return self.username
+
+    def save(self, *args, **kwargs):
+        if self.about_text:
+            self.about_text = escape(self.about_text)
+            self.about_html = markup_to_html(
+                self.about_text, self.about_markup
+                )
+        super(PytoebaUser, self).save(*args, **kwargs)
+
+    def activate_account(self):
+        """
+        Sets user to active. Not to be used
+        directly.
+        """
+        if not self.is_active:
+            self.is_active = True
+            self.save(update_fields=['is_active'])
+
+    def deactivate_account(self):
+        """
+        Sets user to inactive. Not to be used directly.
+        """
+        if self.is_active:
+            self.is_active = False
+            self.save(update_fields=['is_active'])
+
+    def minimum_profile_filled(self):
+        if self.is_active:
+            return True
+
+        if self.username and self.email_confirmed and \
+            len(self.userlang_set.all()) >= 1:
+            self.activate_account()
+            return True
+
+        return False
+
+    @property
+    def email_confirmed(self):
+        """
+        Checks if there's an unconfirmed email
+        pending. An empty string would return
+        True.
+        """
+        return not bool(self.email_unconfirmed)
+
+    def generate_email_confirmation_key(self):
+        """
+        Generates an activation key using a salted
+        sha1 hash.
+        """
+        _, key = salted_sha1(self.username)
+        self.email_confirmation_key = key
+        self.email_confirmation_key_created_on = now()
+
+    def reissue_email_confirmation_key(self):
+        """
+        Regenerates an activation key and resets the
+        activation period for the user.
+        """
+        self.generate_email_confirmation_key()
+        self.date_joined = now()
+        self.save()
+
+    @property
+    def email_confirmation_key_expired(self):
+        """
+        Checks if the confirmation code has been issued
+        for too long to be accepted. The grace period
+        is defined in settings.CONFIRMATION_PERIOD.
+        """
+        expiration_date = self.date_joined + timedelta(settings.CONFIRMATION_PERIOD)
+        if now() >= expiration_date:
+            return True
+        return False
+
+    def confirm_email(self, key):
+        """
+        Confirms the user's email given the confirmation
+        key sent to his e-mail.
+        """
+        if SHA1_RE.search(key):
+            if self.email_confirmation_key != key:
+                return False
+            if not self.email_confirmation_key_expired:
+                self.email_unconfirmed = ''
+                self.save(update_fields=['email_unconfirmed'])
+                return True
+        return False
+
+    def reset_password(old, new):
+        """
+        Resets the user password given the old
+        password. Returns True if successful.
+        """
+        if self.check_password(old):
+            self.set_password(new)
+            return True
+        return False
+
+    def send_confirmation_email(self):
+        """
+        Sends an email to confirm the email address. In case
+        there's already a confirmed e-mail, an old message
+        is sent to that e-mail to notify the user of the change
+        then sends a new message with the confirmation key to
+        the new e-mail.
+        """
+        context = {'user': self,
+                  'new_email': self.email_unconfirmed,
+                  'protocol': get_protocol(),
+                  'confirmation_key': self.email_confirmation_key,
+                  'site': Site.objects.get_current()}
+
+        subject_old = render_to_string(
+            'emails/confirmation_email_subject_old.txt', context
+            )
+        subject_old = ''.join(subject_old.splitlines())
+
+        message_old = render_to_string(
+            'emails/confirmation_email_message_old.txt', context
+            )
+
+        if self.email:
+            self.email_user(subject_old, message_old, settings.DEFAULT_FROM_EMAIL)
+
+        subject_new = render_to_string(
+            'emails/confirmation_email_subject_new.txt', context
+            )
+        subject_new = ''.join(subject_new.splitlines())
+
+        message_new = render_to_string(
+            'emails/confirmation_email_message_new.txt', context
+            )
+
+        send_mail(
+            subject_new, message_new, settings.DEFAULT_FROM_EMAIL,
+            [self.email_unconfirmed]
+            )
+
+    def change_email(self, email):
+        """
+        Changes the email address for a user. A user needs
+        to verify this new email address before it becomes
+        active.
+        """
+        self.email_unconfirmed = email
+        self.generate_email_confirmation_key()
+        self.save()
+        self.send_confirmation_email()
+
+    def verify_lang(self, lang):
+        user_lang = UserLang.objects.get(user=self, lang=lang)
+        self._verify_lang_obj(user_lang)
+
+    def _verify_lang_obj(self, user_lang):
+        if user_lang.is_trusted:
+            return True
+        if user_lang.with_vote_count >= REQUIRED_LANG_VOTES \
+        and not user_lang.is_trusted:
+            user_lang.is_trusted = True
+            user_lang.save(update_fields=['is_trusted'])
+            return True
+        return False
+
+    def add_lang_vote(self, user, lang, is_with=True):
+        user_lang = UserLang.objects.get(user=user, lang=lang)
+        vote = UserVote.objects.create(
+            user=self, type='lp', is_with=is_with, target_id=user_lang.id
+            )
+        if is_with:
+            user_lang.with_vote_count += 1
+            user_lang.save(update_fields=['with_vote_count'])
+        else:
+            user_lang.against_vote_count += 1
+            user_lang.save(update_fields=['against_vote_count'])
+
+        self._verify_lang_obj(user_lang)
+
+    def verify_status(self, status='t'):
+        return self._verify_status_obj(self, status)
+
+    @classmethod
+    def _verify_status_obj(cls, user, status='t'):
+        return cls.objects._verify_status_obj(user, status)
+
+    def add_status_vote(self, user, status='t', is_with=True):
+        vote = UserVote.objects.create(
+        user=self, type='sp', is_with=is_with, target_id=user.id
+        )
+        if is_with:
+            user.with_status_vote_count += 1
+            user.save(update_fields=['with_status_vote_count'])
+        else:
+            user.against_status_vote_count += 1
+            user.save(update_fields=['against_status_vote_count'])
+
+        self._verify_status_obj(user, status)
+
+    @classmethod
+    def authenticate(cls, username, password):
+        return cls.objects.authenticate(username, password)
+
+    def login(self, request):
+        login(self, request)
+
+    def social_auth_add_account(provider, email):
+        return SocialAccount.objects.create(user=self, email=email, uid='')
+
+    def social_auth_request_url(self, backend_name, request):
+        strategy = get_strategy(request)
+        backend = get_backend(settings.AUTHENTICATION_BACKENDS, backend_name)
+        callback_url = get_callback_url(backend_name)
+        backend = backend(strategy, callback_url)
+
+        # Save any defined next value into session
+        data = backend.strategy.request_data(merge=False)
+        # Save extra data into session.
+        for field_name in backend.setting('FIELDS_STORED_IN_SESSION', []):
+            if field_name in data:
+                backend.strategy.session_set(field_name, data[field_name])
+
+        return backend.auth_url()
+
+    def social_auth_login(self, backend_name, request, redirect_url='',
+                          *args, **kwargs):
+        user = self
+
+        strategy = self.social_auth_strategy(request)
+        backend = self.social_auth_backend(backend_name)
+        backend = backend(strategy, redirect_url)
+
+        data = backend.strategy.request_data()
+        redirect_url = backend.strategy.session_get(redirect_name, '') or \
+                         data.get(redirect_name, '')
+
+        is_authenticated = user.is_authenticated()
+        user = is_authenticated and user or None
+
+        partial = partial_pipeline_data(backend, user, *args, **kwargs)
+        if partial:
+            xargs, xkwargs = partial
+            user = backend.continue_pipeline(*xargs, **xkwargs)
+        else:
+            user = backend.complete(user=user, *args, **kwargs)
+
+        user_model = backend.strategy.storage.user.user_model()
+        if user and not isinstance(user, user_model):
+            return user
+
+        if user:
+            is_new = getattr(user, 'is_new', False)
+            social_user = user.social_user
+            login(request, user)
+            backend.strategy.session_set('social_auth_last_login_backend',
+                                         social_user.provider)
+            if backend.setting('SESSION_EXPIRATION', True):
+                # Set session expiration date if present and not disabled.
+                expiration = social_user.expiration_datetime()
+                if expiration:
+                    try:
+                        backend.strategy.request.session.set_expiry(
+                            expiration.seconds + expiration.days * 86400
+                        )
+                    except OverflowError:
+                        # Handle django time zone overflow
+                        backend.strategy.request.session.set_expiry(None)
+
+    def social_auth_disconnect(self, backend_name, request, association_id=None,
+                               redirect_url='', *args, **kwargs):
+        user = self
+        strategy = self.social_auth_strategy(request)
+        backend = self.social_auth_backend(backend_name)
+        backend = backend(strategy, redirect_url)
+        partial = partial_pipeline_data(backend, user, *args, **kwargs)
+        if partial:
+            xargs, xkwargs = partial
+            if association_id and not xkwargs.get('association_id'):
+                xkwargs['association_id'] = association_id
+            response = backend.disconnect(*xargs, **xkwargs)
+        else:
+            response = backend.disconnect(user=user, association_id=association_id,
+                                          *args, **kwargs)
+        return response
+
+    @classproperty
+    @classmethod
+    def search(cls):
+        """
+        Provides access to haystack's searchqueryset api
+        http://django-haystack.readthedocs.org/en/latest/searchqueryset_api.html
+        Example of usage: Sentence.search.filter(text__contains='something')
+        To enable the backend's query dialect in your search string use
+        autoquery.
+        """
+        return SearchQuerySet().models(cls)
+
+    @property
+    def search_messages(self):
+        """
+        Provides access to haystack's searchqueryset api
+        http://django-haystack.readthedocs.org/en/latest/searchqueryset_api.html
+        This method is only accessible from a user instance.
+        """
+        return SearchQuerySet().models(Message).filter(
+            recipient__exact=self.username
+            )
+
+# mother of terrible hacks, blame django for not letting me override
+# the damn field
+PytoebaUser._meta.get_field('is_active').default = False
+
+
+class UserLang(models.Model):
+    """
+    Stores languages that users claim they know and has
+    links to the votes other users cast to confirm their
+    claims. Use this through the user manager api and
+    not directly.
+    """
+    user = models.ForeignKey(User, editable=False, related_name='userlang_set')
+    lang = models.CharField(
+        max_length=4, choices=LANGS, blank=False, null=False, db_index=True
+        )
+    proficiency = models.CharField(
+        max_length=1, choices=PROFICIENCY, blank=False, null=False
+        )
+    is_trusted = models.BooleanField(default=False)
+    votes = models.ManyToManyField('UserVote', editable=False)
+    with_vote_count = models.IntegerField(
+        default=0, editable=False, null=False
+        )
+    against_vote_count = models.IntegerField(
+        default=0, editable=False, null=False
+        )
+
+    class Meta:
+        # this multicolumn index should make accessing user/lang pairs
+        # fast enough for ensuring one unique language per user
+        index_together = [
+            ['user', 'lang'],
+        ]
+        # this enforces one unique lang per user on the db level, uses the
+        # above index.
+        unique_together = (
+            ('user', 'lang'),
+        )
+
+    def realign_vote_count(self):
+        self.with_vote_count = UserVote.objects\
+            .filter(id=self.id, is_with=True).count()
+        self.against_vote_count = UserVote.objects\
+            .filter(id=self.id, is_with=False).count()
+        self.save(update_fields=['with_vote_count', 'against_vote_count'])
+
+
+class UserVote(models.Model):
+    """
+    Keeps track of all votes cast by users. The type field
+    stores what the vote is about. The target_id references
+    some object, so it's generic and can be used for Sentences
+    UserLangs or anything else in the future. Use this model
+    through the user manager api.
+    """
+    user = models.ForeignKey(User, editable=False)
+    type = models.CharField(
+        max_length=2, choices=VOTE_ON, blank=False, null=False
+        )
+    is_with = models.BooleanField(default=True)
+    target_id = models.IntegerField()
+
+    class Meta:
+        index_together = [
+            ['user', 'type', 'target_id'],
+        ]
+        # enforces 1 unique vote type per object for each voter
+        unique_together = (
+            ('user', 'type', 'target_id'),
+        )
+
+
+class SocialAccount(models.Model, DjangoUserMixin):
+    user = models.ForeignKey(User, related_name='social_auth_users')
+    email = models.EmailField(blank=False, null=False)
+    provider = models.CharField(max_length=32, db_index=True)
+    uid = models.CharField(max_length=255, db_index=True)
+    extra_data = JSONField()
+
+    class Meta:
+        db_table = 'social_auth_usersocialauth'
+        index_together = [
+            ['provider', 'uid'],
+            ['provider', 'email'],
+            ['user', 'email'],
+        ]
+
+        unique_together = (
+            ('provider', 'uid'),
+            ('provider', 'email'),
+            ('user', 'email'),
+        )
+
+    @classmethod
+    def get_social_auth(cls, provider, email, uid):
+        try:
+            return cls.objects.get(provider=provider, email=email)
+        except cls.DoesNotExist:
+            try:
+                return cls.objects.get(provider=provider, uid=uid)
+            except cls.DoesNotExist:
+                return None
+
+    @classmethod
+    def create_social_auth(cls, user, uid, provider):
+        cls.objects.create(
+            user=user, uid=uid, provider=provider, email=user.email
+            )
+
+    @classmethod
+    def create_user(cls, **kwargs):
+        username = kwargs['username']
+        email = kwargs['email']
+        password = PytoebaUser.objects.make_random_password()
+        user = PytoebaUser.objects.create_user(
+            username=username, email=email, password=password
+            )
+
+        context = {'user': user,
+                  'protocol': get_protocol(),
+                  'password': password,
+                  'site': Site.objects.get_current()}
+        subject = render_to_string(
+            'emails/reset_password_social_only_subject.txt', context
+            )
+        subject = ''.join(subject_old.splitlines())
+
+        message = render_to_string(
+            'emails/reset_password_social_only_message.txt', context
+            )
+        user.email_user(subject_old, message_old, settings.DEFAULT_FROM_EMAIL)
+
+    @classmethod
+    def user_model(cls):
+        return models.get_model('pytoeba', User)
+
+    @classmethod
+    def username_max_length(cls):
+        username_field = cls.username_field()
+        field = cls.user_model()._meta.get_field(username_field)
+        return field.max_length
+
+
+class Nonce(models.Model, DjangoNonceMixin):
+    """One use numbers"""
+    server_url = models.CharField(max_length=255)
+    timestamp = models.IntegerField()
+    salt = models.CharField(max_length=65)
+
+    class Meta:
+        db_table = 'social_auth_nonce'
+
+
+class Association(models.Model, DjangoAssociationMixin):
+    """OpenId account association"""
+    server_url = models.CharField(max_length=255)
+    handle = models.CharField(max_length=255)
+    secret = models.CharField(max_length=255) # Stored base64 encoded
+    issued = models.IntegerField()
+    lifetime = models.IntegerField()
+    assoc_type = models.CharField(max_length=64)
+
+    class Meta:
+        db_table = 'social_auth_association'
+
+
+class Code(models.Model, DjangoCodeMixin):
+    email = models.EmailField()
+    code = models.CharField(max_length=32, db_index=True)
+    verified = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = 'social_auth_code'
+        unique_together = ('email', 'code')
+
+
+class PytoebaSocialStorage(BaseDjangoStorage):
+    user = SocialAccount
+    nonce = Nonce
+    association = Association
+    code = Code
+
+    @classmethod
+    def is_integrity_error(cls, exception):
+        return exception.__class__ is IntegrityError
+
+
+class Message(models.Model):
+    """
+    A private message from a user to another.
+    """
+    subject = models.CharField(max_length=120)
+    body = models.TextField()
+    sender = models.ForeignKey(User, related_name='sent_messages')
+    recipient = models.ForeignKey(
+        User, related_name='received_messages', null=True, blank=True
+        )
+    parent_msg = models.ForeignKey(
+        'self', related_name='next_messages', null=True, blank=True
+        )
+    sent_on = models.DateTimeField(null=True, blank=True)
+    read_on = models.DateTimeField(null=True, blank=True)
+    replied_on = models.DateTimeField(null=True, blank=True)
+    sender_deleted_on = models.DateTimeField(
+        db_index=True, null=True, blank=True
+        )
+    recipient_deleted_on = models.DateTimeField(
+        db_index=True, null=True, blank=True
+        )
+
+    objects = MessageManager()
+    
+    class Meta:
+        index_together = [
+            ['recipient', 'recipient_deleted_on'],
+            ['sender', 'sender_deleted_on'],
+        ]
+
+    def __unicode__(self):
+        return self.subject
+
+    def save(self, **kwargs):
+        if not self.id:
+            self.sent_on = now()
+        super(Message, self).save(**kwargs)
+
+    def new(self):
+        """
+        Returns whether the recipient has read the message or not
+        """
+        if not self.read_on:
+            return False
+        return True
+
+    def replied(self):
+        """
+        Returns whether the recipient has written a reply to this message
+        """
+        return bool(self.replied_on)
+
+    def mark_read(self):
+        """
+        Marks a message as read.
+        """
+        if not self.read_on:
+            self.read_on = now()
+            self.save(update_fields=['read_on'])
+
+    def mark_unread(self):
+        """
+        Marks a message as unread.
+        """
+        if self.read_at:
+            self.read_at = None
+            self.save(update_fields=['read_on'])
+
+
+class Comment(models.Model):
+    sentence = models.ForeignKey(Sentence)
+    text = models.TextField(blank=False, null=False)
+    added_by = models.ForeignKey(User, editable=False)
+    added_on = models.DateTimeField(
+        db_index=True, auto_now_add=True, editable=False
+        )
+    modified_on = models.DateTimeField(
+        db_index=True, auto_now=True, editable=False
+        )
+    is_public = models.BooleanField(db_index=True, default=True)
+    is_deleted = models.BooleanField(db_index=True, default=False)
+
+    objects = CommentManager()
+
+    def __unicode__(self):
+        return '%s: %s...' % (self.added_by, self.text[:50])
+
+    def edit(self, text):
+        self.text = text
+        self.save(update_fields=['text'])
+
+    def delete(self):
+        self.is_deleted = True
+        self.save(update_fields=['is_deleted'])
+
+    def hide(self):
+        self.is_public = False
+        self.save(update_fields=['is_public'])
+
+    @classproperty
+    @classmethod
+    def search(cls):
+        """
+        Provides access to haystack's searchqueryset api
+        http://django-haystack.readthedocs.org/en/latest/searchqueryset_api.html
+        Example of usage: Sentence.search.filter(text__contains='something')
+        To enable the backend's query dialect in your search string use
+        autoquery.
+        """
+        return SearchQuerySet().models(cls)
+
+
+class Wall(models.Model):
+    category = models.CharField(db_index=True, max_length=100)
+
+    def __unicode__(self):
+        return self.category
+
+    def get_threads(self):
+        return WallThread.objects.filter(wall=self)
+
+    @classproperty
+    @classmethod
+    def search(cls):
+        """
+        Provides access to haystack's searchqueryset api
+        http://django-haystack.readthedocs.org/en/latest/searchqueryset_api.html
+        Example of usage: Sentence.search.filter(text__contains='something')
+        To enable the backend's query dialect in your search string use
+        autoquery.
+        """
+        return SearchQuerySet().models(WallPost)
+
+
+class WallThread(models.Model):
+    wall = models.ForeignKey(Wall, related_name='threads')
+    subject = models.CharField(max_length=100)
+    added_by = models.ForeignKey(User, editable=False)
+    added_on = models.DateTimeField(auto_now_add=True, editable=False)
+    sticky = models.BooleanField(default=False)
+    subscribers = models.ManyToManyField(
+        User, related_name='subscriptions', blank=True
+        )
+
+    def __unicode__(self):
+        return self.subject
+
+    @property
+    def modified_on(self):
+        self.thread_posts.all().order_by('-modified_on')[0].modified_on
+
+    def get_posts(self):
+        return WallPost.objects.filter(thread=self, is_public=True)
+
+    def make_sticky(self):
+        self.sticky = True
+        self.save(update_fields=['sticky'])
+
+    @classmethod
+    def get_sticky(cls):
+        return cls.objects.filter(sticky=True)
+
+    def subscribe(self):
+        user = get_user()
+        self.subscribers.add(user)
+        # TODO add some signal here
+
+    def add_new_post(self, subject, body):
+        user = get_user()
+        thread = WallThread.objects.create(
+            added_by=user, wall=self, subject=subject
+            )
+        post = WallPost.objects.create(
+            wall=self, thread=thread, added_by=user, subject=subject,
+            body_text=body
+        )
+        return post
+
+
+class WallPost(models.Model):
+    wall = models.ForeignKey(Wall, related_name='wall_posts')
+    thread = models.ForeignKey(WallThread, related_name='thread_posts')
+    subject = models.CharField(max_length=100)
+    added_by = models.ForeignKey(User, editable=False)
+    added_on = models.DateTimeField(
+        db_index=True, auto_now_add=True, editable=False
+        )
+    modified_on = models.DateTimeField(db_index=True, auto_now=True)
+    body_text = models.TextField()
+    body_markup = models.CharField(max_length=2, choices=MARKUPS, default='')
+    body_html = models.TextField()
+    is_public = models.BooleanField(db_index=True, default=True)
+
+    def __unicode__(self):
+        return self.subject
+
+    def save(self, *args, **kwargs):
+        self.body_text = escape(self.body_text)
+        self.body_html = markup_to_html(self.body_text, self.body_markup)
+        super(WallPost, self).save(*args, **kwargs)
+
+    def hide(self):
+        self.is_public = False
+        self.save(update_fields=['is_public'])
+
+    def edit(self, body, markup=''):
+        fields = ['body_text', 'body_html']
+        self.body_text = body
+        if markup:
+            self.body_markup = markup
+            fields.append('body_markup')
+        self.save(update_fields=fields)
+
+    def delete(self):
+        thread = self.thread
+        super(WallPost, self).delete()
+        if not thread.thread_posts.all():
+            thread.delete()

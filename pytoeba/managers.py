@@ -1,7 +1,10 @@
 from django.db.models.manager import Manager
 from django.db.models.query import QuerySet
 from django.db.models.loading import get_model
-from .utils import get_user
+from django.contrib.auth.models import UserManager
+from django.contrib.auth import authenticate
+
+from .utils import get_user, now, bulk_update, bulk_create, bulk_delete
 
 
 class SentenceQuerySet(QuerySet):
@@ -69,48 +72,134 @@ class SentenceQuerySet(QuerySet):
         same implementation as the delete sentence instance
         method.
         """
-        for sent in self.all():
-            sent.delete()
+        user = get_user()
+        sents = list(self.all())
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+
+        for sent in sents:
+            sent.is_deleted = True
+            logs.append(
+                Log(
+                    sentence=sent, type='srd', done_by=user,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang
+                    )
+                )
+
+        bulk_update(sents, update_fields=['is_deleted'])
+        bulk_create(logs)
 
     def lock(self):
         """
         Bulk locks sentences in the queryset. Mirrors
         sentence.lock
         """
-        for sent in self.all():
-            sent.lock()
+        user = get_user()
+        sents = list(self.all())
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+
+        for sent in sents:
+            sent.is_editable = False
+            logs.append(
+                Log(
+                    sentence=sent, type='sld', done_by=user,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang
+                    )
+                )
+
+        bulk_update(sents, update_fields=['is_editable'])
+        bulk_create(logs)
 
     def unlock(self):
         """
         Bulk unlocks sentences in the queryset. Mirrors
         sentece.lock.
         """
-        for sent in self.all():
-            sent.unlock()
+        user = get_user()
+        sents = list(self.all())
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+
+        for sent in sents:
+            sent.is_editable = True
+            logs.append(
+                Log(
+                    sentence=sent, type='sul', done_by=user,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang
+                    )
+                )
+
+        bulk_update(sents, update_fields=['is_editable'])
+        bulk_create(logs)
 
     def adopt(self):
         """
         Bulk adopts sentences in the queryset. Mirrors
         sentence.adopt.
         """
-        for sent in self.all():
-            sent.adopt()
+        user = get_user()
+        sents = list(self.all())
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+
+        for sent in sents:
+            sent.owner = user
+            logs.append(
+                Log(
+                    sentence=sent, type='soa', done_by=user,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang
+                    )
+                )
+
+        bulk_update(sents, update_fields=['owner'])
+        bulk_create(logs)
 
     def release(self):
         """
         Bulk releases ownership over sentences in the
         queryset. Mirrors sentence.release.
         """
-        for sent in self.all():
-            sent.release()
+        user = get_user()
+        sents = list(self.all())
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+
+        for sent in sents:
+            sent.owner = None
+            logs.append(
+                Log(
+                    sentence=sent, type='sor', done_by=user,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang
+                    )
+                )
+
+        bulk_update(sents, update_fields=['owner'])
+        bulk_create(logs)
 
     def change_language(self, lang):
         """
         Bulk changes the lang field on sentences in the
         queryset. Mirrors sentence.change_language.
         """
-        for sent in self.all():
-            sent.change_language(lang)
+        user = get_user()
+        sents = list(self.all())
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+
+        for sent in sents:
+            old_lang = sent.lang
+            sent.lang = lang
+            logs.append(
+                Log(
+                    sentence=sent, type='slc', done_by=user,
+                    source_hash_id=sent.hash_id, source_lang=old_lang,
+                    target_lang=sent.lang
+                    )
+                )
+
+        bulk_update(sents, update_fields=['lang'])
+        bulk_create(logs)
 
     def link(self, sent):
         """
@@ -118,7 +207,7 @@ class SentenceQuerySet(QuerySet):
         queryset to a single sentence.
         Mirrors the instance method.
         """
-        sents = self.all()
+        sents = list(self.all())
         sent.bulk_link(sents)
 
     def unlink(self, sent):
@@ -127,7 +216,7 @@ class SentenceQuerySet(QuerySet):
         queryset from a single sentence.
         Mirrors the instance methods.
         """
-        sents = self.all()
+        sents = list(self.all())
         sent.bulk_unlink(sents)
 
     def translate(self, text, lang='auto'):
@@ -136,7 +225,7 @@ class SentenceQuerySet(QuerySet):
         all sentences in the queryset.
         Mirrors the instance methods.
         """
-        sents = self.all()
+        sents = list(self.all())
         sent = self.add(text, lang)
         sent.bulk_link(sents)
 
@@ -145,8 +234,25 @@ class SentenceQuerySet(QuerySet):
         Autoforces corrections on all sentences
         in the queryset. Mirrors the instance method.
         """
-        for sent in self.all():
-            sent.auto_force_correction()
+        user = get_user()
+        sents = list(self.all())
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+        Correction = get_model('pytoeba', 'Correction')
+
+        for sent in sents:
+            corr = Correction.objects.filter(sentence=sent)[0]
+            sent.text = corr.text
+            logs.append(
+                Log(
+                    sentence=sent, type='cfd', done_by=user, change_set=corr.text,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang,
+                    target_id=corr.id, target_hash_id=corr.hash_id
+                    )
+                )
+
+        bulk_update(sents, update_fields=['text'])
+        bulk_create(logs)
 
     def add_tag(self, text):
         """
@@ -154,8 +260,31 @@ class SentenceQuerySet(QuerySet):
         in the queryset. Mirrors the instance
         method.
         """
-        for sent in self.all():
-            sent.add_tag(text)
+        user = get_user()
+        sents = list(self.all())
+        sentags = []
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+        LocalizedTag = get_model('pytoeba', 'LocalizedTag')
+        SentenceTag = get_model('pytoeba', 'SentenceTag')
+        tag = LocalizedTag.objects.get(text=text).tag
+
+        for sent in sents:
+            sentags.append(
+                SentenceTag(
+                    sentence=sent, tag=tag, added_by=user
+                    )
+                )
+            logs.append(
+                Log(
+                    sentence=sent, type='cfd', done_by=user, change_set=corr.text,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang,
+                    target_id=corr.id, target_hash_id=corr.hash_id
+                    )
+                )
+
+        bulk_create(sentags)
+        bulk_create(logs)
 
     def add_new_tag(self, text, lang):
         """
@@ -163,10 +292,31 @@ class SentenceQuerySet(QuerySet):
         sentences in the queryset. Mirrors the
         instance method.
         """
-        sents = self.all()
-        sents[0].add_new_tag(text, lang)
-        for sent in sents[1:]:
-            sent.add_tag(text)
+        user = get_user()
+        sents = list(self.all())
+        sentags = []
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+        Tag = get_model('pytoeba', 'Tag')
+        SentenceTag = get_model('pytoeba', 'SentenceTag')
+        tag = Tag.objects.add_new(text, lang)
+
+        for sent in sents:
+            sentags.append(
+                SentenceTag(
+                    sentence=sent, tag=tag, added_by=user
+                    )
+                )
+            logs.append(
+                Log(
+                    sentence=sent, type='cfd', done_by=user, change_set=corr.text,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang,
+                    target_id=corr.id, target_hash_id=corr.hash_id
+                    )
+                )
+
+        bulk_create(sentags)
+        bulk_create(logs)
 
     def delete_tag(self, text):
         """
@@ -174,8 +324,30 @@ class SentenceQuerySet(QuerySet):
         in the queryset. Mirrors the
         instance method.
         """
-        for sent in self.all():
-            sent.delete_tag(text)
+        user = get_user()
+        sents = list(self.all())
+        logs = []
+        Log = get_model('pytoeba', 'Log')
+        LocalizedTag = get_model('pytoeba', 'LocalizedTag')
+        SentenceTag = get_model('pytoeba', 'SentenceTag')
+
+        loctag = LocalizedTag.objects.get(text=text)
+        sentags = list(SentenceTag.objects.filter(
+            sentence__in=sents, tag_id=loctag.tag_id
+            ))
+
+        tag_hash_id = loctag.tag.hash_id
+        for sent in sents:
+            logs.append(
+                Log(
+                    sentence=sent, type='trd', done_by=user,
+                    source_hash_id=sent.hash_id, source_lang=sent.lang,
+                    target_id=loctag.tag_id, target_hash_id=tag_hash_id
+                    )
+                )
+
+        bulk_delete(sentags)
+        bulk_create(logs)
 
 class SentenceManager(Manager):
 
@@ -214,19 +386,25 @@ class SentenceManager(Manager):
         Log = get_model('pytoeba', 'Log')
         Log.objects.create(
             sentence=sent, type='sad', done_by=user, change_set=text,
-            target_id=sent.hash_id
+            target_id=sent.id, target_hash_id=sent.hash_id
             )
         return sent
 
     def bulk_add(self, sentences):
-        if isinstance(sentences[0], tuple):
+        added_sents = []
+        
+        if isinstance(sentences[0], dict):
             for sent_info in sentences:
-                text = sent_info[0]
-                lang = sent_info[1]
-                self.add(text, lang)
+                text = sent_info['text']
+                lang = sent_info['lang']
+                sent = self.add(text, lang)
+                added_sents.append(sent)
         else:
             for sentence in sentences:
-                self.add(sentence)
+                sent = self.add(sentence)
+                added_sents.append(sent)
+
+        return added_sents
 
     def show(self, hash_id):
         return self.get(hash_id=hash_id)
@@ -235,23 +413,15 @@ class SentenceManager(Manager):
         return self.filter(hash_id__in=hashes)
 
     def edit(self, hash_id, text):
-        sent = self.get(hash_id=hash_id)
+        sent = self.show(hash_id)
         sent.edit(text)
 
-    def bulk_edit(self, edits):
-        for edit in edits:
-            hash_id = edit[0]
-            text = edit[1]
-            self.edit(hash_id, text)
-
     def delete(self, hash_id):
-        sent = self.get(hash_id=hash_id)
+        sent = self.show(hash_id)
         sent.delete()
 
     def bulk_delete(self, hashes):
-        sentences = self.filter(hash_id__in=hashes)
-        for sent in sentences:
-            sent.delete()
+        self.bulk_show(hashes).delete()
 
     def lock(self, sent_id):
         self.show(sent_id)
@@ -417,3 +587,104 @@ class TagManager(Manager):
         tag = self.create(added_by=user)
         tag.translate(text, lang)
         return tag
+
+
+class PytoebaUserManager(UserManager):
+
+    def _create_user(self, username, email, password,
+                     is_staff, is_superuser, **extra_fields):
+        """
+        Overrides default _create_user in django's auth package.
+        This is used by create_user and create_superuser on the
+        default manager.
+        """
+        _now = now()
+        if not username:
+            raise ValueError('The given username must be set')
+        email = self.normalize_email(email)
+        user = self.model(username=username, email=email,
+                          is_staff=is_staff, is_active=False,
+                          is_superuser=is_superuser, last_login=_now,
+                          date_joined=_now, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
+    def _verify_status_obj(self, user, status='t'):
+        if user.status == status:
+            return True
+        if user.status != status and \
+        user.with_status_vote >= REQUIRED_STATUS_VOTES:
+            user.status = status
+            user.with_status_votes = 0
+            user.against_status_votes = 0
+            user.save(update_fields=[
+                'status', 'with_status_votes', 'against_status_votes'
+                ])
+            return True
+        return False
+
+    def verify_status(self, username, status='t'):
+        user = self.get(username=username)
+        return self._verify_status_obj(user, status)
+
+    def authenticate(username, password):
+        return authenticate(username, password)
+
+    def delete_expired_users(self):
+        """
+        Checks for expired users and deletes them.
+        Returns a list containing the deleted users.
+        """
+        deleted_users = []
+        for user in self.filter(is_staff=False, is_active=False):
+            if user.userena_signup.activation_key_expired():
+                deleted_users.append(user)
+                user.delete()
+        return deleted_users
+
+
+class MessageManager(Manager):
+
+    def inbox(self):
+        """
+        Returns all messages that were received by the given user and are not
+        marked as deleted.
+        """
+        user = get_user()
+        return self.filter(
+            recipient=user,
+            recipient_deleted_on__isnull=True,
+        )
+
+    def outbox(self):
+        """
+        Returns all messages that were sent by the given user and are not
+        marked as deleted.
+        """
+        user = get_user()
+        return self.filter(
+            sender=user,
+            sender_deleted_on__isnull=True,
+        )
+
+    def trash(self):
+        """
+        Returns all messages that were either received or sent by the given
+        user and are marked as deleted.
+        """
+        user = get_user()
+        return self.filter(
+            recipient=user,
+            recipient_deleted_on__isnull=False,
+        ) | self.filter(
+            sender=user,
+            sender_deleted_on__isnull=False,
+        )
+
+
+class CommentManager(Manager):
+
+    def add(self, sentence, text):
+        user = get_user()
+        self.create(sentence=sentence, text=text, added_by=user)

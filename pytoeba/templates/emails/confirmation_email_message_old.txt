@@ -1,0 +1,18 @@
+{% load i18n %}
+
+{% autoescape off %}
+
+{% blocktrans %}
+Dear {{ user.username }},
+{% endblocktrans %}
+
+{% blocktrans %}
+There was a request to change your email address at {{ site.name }}.
+{% endblocktrans %}
+
+{% blocktrans %}
+An email has been send to {{ new_email }} which contains a confirmation code.{% endblocktrans %}
+
+{% trans "Thanks for using {{ site.name }} !" %}
+
+{% endautoescape %}

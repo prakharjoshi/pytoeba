@@ -1,0 +1,23 @@
+{% load i18n %}
+
+{% autoescape off %}
+
+{% blocktrans %}
+Dear {{ user.username }},
+{% endblocktrans %}
+
+{% blocktrans %}
+You requested a change of your email address at {{ site.name }}.
+{% endblocktrans %}
+
+
+{% blocktrans %}
+Please confirm this email address by using this confirmation code:
+{{ confirmation_key }}
+{% endblocktrans %}
+
+{% blocktrans %}
+Thanks for using {{ site.name }}!
+{% endblocktrans %}
+
+{% endautoescape %}
