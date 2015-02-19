@@ -1,0 +1,20 @@
+language: python
+python:
+  - "2.7"
+# command to install dependencies
+install: 
+	- pip install -r requirements.txt
+	- pip install -r scipy\_backend\_requirements.txt
+	- pip install -r networkx\_backend\_requirements.txt
+	- pip install -r xapian\_backend\_requirements.txt
+# command to run tests
+script: 
+	- py.test
+# Command for coverage 
+after_sucess:
+	- coverage run --source pytoeba -m py.test
+	- coverage report
+# command to generate html_report
+after_sucess:
+	- coverage run --source pytoeba -m py.test
+	- coverage html
